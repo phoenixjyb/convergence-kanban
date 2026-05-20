@@ -1,0 +1,64 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Run tests
+        run: pytest tests/ -x -q
+
+  smoke-install:
+    runs-on: ubuntu-latest
+    needs: pytest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Smoke-boot the app (no Feishu env)
+        run: |
+          # Boot the app in the background, hit /api/agent-guide, kill it
+          python3 app.py &
+          APP_PID=$!
+          sleep 3
+          # Endpoint should serve markdown
+          curl -fsS http://localhost:8666/api/agent-guide?format=index > /tmp/index.json
+          test -s /tmp/index.json
+          # Endpoint should also serve the full guide
+          curl -fsS http://localhost:8666/api/agent-guide | head -1 | grep -q "ConvergenceKanban"
+          kill $APP_PID
+        env:
+          PORT: 8666
