@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ConvergenceKanban</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600;700&family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<!-- Background texture -->
+<div class="bg-grid"></div>
+
+<div id="app">
+  <!-- Header -->
+  <header class="header" role="banner">
+    <div class="header-left">
+      <h1>ConvergenceKanban</h1>
+    </div>
+    <div class="header-right">
+      <button class="btn btn-sm hamburger-btn" id="hamburgerBtn" onclick="toggleMobileMenu()">☰</button>
+      <div class="header-actions" id="headerActions">
+        <button class="btn btn-sm" onclick="showUserPicker()" id="userBtn" title="Switch user">login</button>
+        <button class="btn btn-sm" onclick="showNotificationPrefs()" id="notifBtn" title="Notification Preferences" style="display:none">🔔</button>
+        <button class="btn btn-sm" onclick="showMembers()" title="Team Members">👥</button>
+        <a href="/bugs" class="btn btn-sm" title="Bug Reports" id="bugBtn">🐛</a>
+        <button class="btn btn-sm" onclick="showBin()" title="Bin / Trash">🗑</button>
+        <button class="btn btn-sm" onclick="exportCSV()" id="exportBtn" title="Export CSV">📥</button>
+        <button class="btn btn-sm" onclick="showConflicts()" id="conflictBtn" title="Sync Conflicts" style="display:none">⚡ <span id="conflictCount">0</span></button>
+        <a href="/analytics" class="btn btn-sm" title="Analytics" id="analyticsBtn">📊</a>
+        <button class="btn btn-sm" onclick="toggleAutoRefresh()" id="autoRefreshBtn" title="Auto-refresh toggle">⟳ ON</button>
+        <button class="btn btn-sm" onclick="cycleFontSize()" id="fontSizeBtn" title="Font size">A₂</button>
+        <button class="btn btn-sm" onclick="toggleTheme()" id="themeBtn" title="Toggle theme">☀️</button>
+        <button class="btn btn-sm" onclick="toggleLang()" id="langBtn">中文</button>
+        <button class="btn btn-sm" onclick="toggleViewMode()" id="viewBtn" title="Toggle view">☰</button>
+        <button class="btn btn-sm btn-primary" onclick="showAddProject()">
+          <span data-i18n="addProject">+ Project</span>
+        </button>
+        <button class="btn btn-sm" onclick="refreshDashboard()">↻</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Stats bar -->
+  <div id="statsBar" class="stats-bar"></div>
+
+  <!-- Filter toggle (mobile) -->
+  <button class="btn btn-sm filter-toggle-btn" id="filterToggleBtn" onclick="toggleFilterBar()">🔍 <span data-i18n="filters">Filters</span></button>
+
+  <!-- Filter bar -->
+  <div id="filterBar" class="filter-bar" role="search" aria-label="Task filters">
+    <input type="text" id="filterSearch" class="filter-input" data-i18n-placeholder="searchTasks" placeholder="Search tasks..." oninput="applyFilters()">
+    <div class="filter-multi" id="filterStatusMulti">
+      <button class="btn btn-sm" onclick="toggleStatusDropdown()" id="filterStatusBtn" data-i18n="allStatuses">All Status ▾</button>
+      <div id="statusDropdown" class="filter-dropdown hidden">
+        <label><input type="checkbox" value="todo" onchange="applyStatusMultiSelect()"> <span data-i18n="todo">To Do</span></label>
+        <label><input type="checkbox" value="doing" onchange="applyStatusMultiSelect()"> <span data-i18n="doing">Doing</span></label>
+        <label><input type="checkbox" value="in_review" onchange="applyStatusMultiSelect()"> <span data-i18n="in_review">In Review</span></label>
+        <label><input type="checkbox" value="done" onchange="applyStatusMultiSelect()"> <span data-i18n="done">Done</span></label>
+        <label><input type="checkbox" value="blocked" onchange="applyStatusMultiSelect()"> <span data-i18n="blocked">Blocked</span></label>
+        <label><input type="checkbox" value="abandoned" onchange="applyStatusMultiSelect()"> <span data-i18n="abandoned">Abandoned</span></label>
+      </div>
+    </div>
+    <select id="filterAssignee" class="filter-select" onchange="applyFilters()"></select>
+    <select id="filterPriority" class="filter-select" onchange="applyFilters()">
+      <option value="" data-i18n="allPriority">All Priority</option>
+      <option value="critical" data-i18n="critical">Critical</option>
+      <option value="high" data-i18n="high">High</option>
+      <option value="medium" data-i18n="medium">Medium</option>
+      <option value="low" data-i18n="low">Low</option>
+    </select>
+    <input type="date" id="filterDateFrom" class="filter-input filter-date" onchange="applyFilters()" title="From date">
+    <input type="date" id="filterDateTo" class="filter-input filter-date" onchange="applyFilters()" title="To date">
+    <select id="filterPreset" class="filter-select" onchange="loadFilterPreset()">
+      <option value="">Presets</option>
+    </select>
+    <button class="btn btn-sm" id="savePresetBtn" onclick="saveFilterPreset()" title="Save current filter">💾</button>
+    <button class="btn btn-sm" id="clearFiltersBtn" onclick="clearFilters()" style="display:none" data-i18n="clearFilters">Clear</button>
+  </div>
+
+  <!-- Dashboard -->
+  <main id="dashboard" class="dashboard" role="main" aria-label="Project dashboard"></main>
+
+  <!-- Activity sidebar -->
+  <aside id="activityPanel" class="activity-panel hidden" role="complementary" aria-label="Activity log">
+    <div class="activity-header">
+      <h3 data-i18n="recentActivity">Recent Activity</h3>
+      <button class="btn btn-sm" onclick="toggleActivity()">✕</button>
+    </div>
+    <div id="activityList" class="activity-list"></div>
+  </aside>
+
+  <button class="fab" onclick="toggleActivity()" title="Activity Log">📋</button>
+</div>
+
+<!-- Bulk action bar -->
+<div id="bulkBar" class="bulk-bar" style="display:none">
+  <span id="bulkCount"></span>
+  <select id="bulkStatus" class="filter-select" style="min-width:100px">
+    <option value="" data-i18n="setStatus">Set Status...</option>
+    <option value="todo" data-i18n="todo">To Do</option><option value="doing" data-i18n="doing">Doing</option>
+    <option value="done" data-i18n="done">Done</option><option value="blocked" data-i18n="blocked">Blocked</option>
+  </select>
+  <button class="btn btn-sm btn-primary" onclick="bulkApplyStatus()" data-i18n="apply">Apply</button>
+  <button class="btn btn-sm btn-danger" onclick="bulkAction('delete')" data-i18n="delete">Delete</button>
+  <button class="btn btn-sm" onclick="bulkClear()" data-i18n="cancel">Cancel</button>
+</div>
+
+<!-- Modal -->
+<div id="modal" class="modal hidden" role="dialog" aria-modal="true" onclick="if(event.target===this)closeModal()">
+  <div class="modal-content" id="modalContent"></div>
+</div>
+
+<div id="toasts" class="toast-container"></div>
+<script src="/static/i18n.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>
