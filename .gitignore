@@ -1,0 +1,55 @@
+# Data + databases (single-user state, secrets-adjacent)
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+build/
+dist/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+htmlcov/
+.coverage
+.tox/
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Secrets — .env, .env.team, .env.openids etc.
+.env*
+!.env.example
+secrets/
+
+# OS noise
+.DS_Store
+Thumbs.db
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Local-only scripts that were one-offs
+grab_oids.py
+import_session_status.py
+
+# Logs
+*.log
+logs/
+
+# Node (in case anyone adds a frontend build)
+node_modules/
+
+# Local Claude / agent state
+.claude/scheduled_tasks.lock
