@@ -1,0 +1,76 @@
+name: Bug report
+description: Something broken or behaving unexpectedly in ConvergenceKanban.
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. A few quick fields below help a lot.
+        For security vulnerabilities please email instead — see [SECURITY.md](../blob/main/SECURITY.md).
+
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: Release tag (`v0.2.2`) or commit hash from `git rev-parse HEAD`.
+      placeholder: "v0.2.2 or abc1234"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: deployment
+    attributes:
+      label: Deployment
+      options:
+        - Docker (docker compose)
+        - From source (python3 app.py)
+        - Other
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: integrations
+    attributes:
+      label: Integrations enabled
+      description: Which optional integrations are configured in your `.env`?
+      options:
+        - label: Feishu / Lark
+        - label: Slack
+        - label: DingTalk / 钉钉
+        - label: None — standalone mode
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you see? Include the exact HTTP status, error message, or UI symptom.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: The curl command, the click path, or the minimal repro.
+      placeholder: |
+        1. curl -X POST http://localhost:8666/api/...
+        2. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: Relevant server log lines, browser console output, or stack trace. Redact tokens / webhook URLs.
+      render: shell
+    validations:
+      required: false

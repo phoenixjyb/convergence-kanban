@@ -1,0 +1,19 @@
+name: Question
+description: Ask a question about setup, usage, or behavior.
+title: "[question] "
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Most questions are a better fit for [Discussions](https://github.com/phoenixjyb/convergence-kanban/discussions) —
+        they're easier for other users to find later. But if you really need an
+        issue tracker entry (e.g. you're tracking it from another system), go ahead.
+
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: What are you trying to do, and what's unclear? Include any relevant config, commands, or docs you've already read.
+    validations:
+      required: true
