@@ -1,0 +1,57 @@
+services:
+  # ─────────────────────────────────────────────────────────────────
+  # Core kanban service — minimum viable deployment.
+  # No Feishu integration; just the web UI + REST API on PORT.
+  # ─────────────────────────────────────────────────────────────────
+  kanban:
+    build: .
+    image: convergencekanban:latest
+    container_name: convergencekanban
+    restart: unless-stopped
+    ports:
+      - "${PORT:-8666}:${PORT:-8666}"
+    volumes:
+      - ./data:/app/data
+    env_file:
+      - .env
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:${PORT:-8666}/').read()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # ─────────────────────────────────────────────────────────────────
+  # Optional: Feishu Bitable bidirectional sync.
+  # Enable with: docker compose --profile feishu up -d
+  # Requires FEISHU_APP_ID / FEISHU_APP_SECRET in .env.
+  # ─────────────────────────────────────────────────────────────────
+  sync:
+    image: convergencekanban:latest
+    container_name: convergencekanban-sync
+    restart: unless-stopped
+    profiles: ["feishu"]
+    depends_on:
+      - kanban
+    volumes:
+      - ./data:/app/data
+    env_file:
+      - .env
+    command: ["python3", "-u", "feishu_sync.py"]
+
+  # ─────────────────────────────────────────────────────────────────
+  # Optional: Feishu chat bot (long-poll WebSocket).
+  # Enable with: docker compose --profile feishu up -d
+  # ─────────────────────────────────────────────────────────────────
+  bot:
+    image: convergencekanban:latest
+    container_name: convergencekanban-bot
+    restart: unless-stopped
+    profiles: ["feishu"]
+    depends_on:
+      - kanban
+    volumes:
+      - ./data:/app/data
+    env_file:
+      - .env
+    command: ["python3", "-u", "feishu_bot.py"]

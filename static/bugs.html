@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Bug Tracker — ConvergenceKanban</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600;700&family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/static/bugs.css">
+</head>
+<body>
+<!-- Background texture -->
+<div class="bg-grid"></div>
+
+<div id="app">
+  <!-- Header -->
+  <header class="header">
+    <div class="header-left">
+      <a href="/" class="back-link">&larr;</a>
+      <h1 data-i18n="bugTracker">Bug Tracker</h1>
+      <span class="bug-count-badge" id="totalBugCount">0</span>
+    </div>
+    <div class="header-right">
+      <div class="header-actions">
+        <button class="btn btn-sm" onclick="showUserPicker()" id="userBtn" title="Switch user">login</button>
+        <button class="btn btn-sm" onclick="cycleFontSize()" id="fontSizeBtn" title="Font size">A₂</button>
+        <button class="btn btn-sm" onclick="toggleTheme()" id="themeBtn" title="Toggle theme">☀️</button>
+        <button class="btn btn-sm" onclick="toggleLang()" id="langBtn">中文</button>
+        <button class="btn btn-sm btn-primary" onclick="showCreateBug()" id="newBugBtn">
+          <span data-i18n="newBug">+ Bug</span>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Severity summary strip -->
+  <div class="severity-strip" id="severityStrip">
+    <button class="sev-stat active" data-sev="all" onclick="filterBySeverity('all')">
+      <span class="sev-stat-count" id="countAll">0</span>
+      <span class="sev-stat-label" data-i18n="bugs">All Bugs</span>
+    </button>
+    <button class="sev-stat" data-sev="critical" onclick="filterBySeverity('critical')">
+      <span class="sev-indicator sev-ind-critical"></span>
+      <span class="sev-stat-count" id="countCritical">0</span>
+      <span class="sev-stat-label" data-i18n="critical">Critical</span>
+    </button>
+    <button class="sev-stat" data-sev="high" onclick="filterBySeverity('high')">
+      <span class="sev-indicator sev-ind-high"></span>
+      <span class="sev-stat-count" id="countHigh">0</span>
+      <span class="sev-stat-label" data-i18n="high">High</span>
+    </button>
+    <button class="sev-stat" data-sev="medium" onclick="filterBySeverity('medium')">
+      <span class="sev-indicator sev-ind-medium"></span>
+      <span class="sev-stat-count" id="countMedium">0</span>
+      <span class="sev-stat-label" data-i18n="medium">Medium</span>
+    </button>
+    <button class="sev-stat" data-sev="low" onclick="filterBySeverity('low')">
+      <span class="sev-indicator sev-ind-low"></span>
+      <span class="sev-stat-count" id="countLow">0</span>
+      <span class="sev-stat-label" data-i18n="low">Low</span>
+    </button>
+  </div>
+
+  <!-- Toolbar: search + filters + view toggle -->
+  <div class="bug-toolbar">
+    <div class="bug-search-wrap">
+      <span class="search-icon">⌕</span>
+      <input type="text" id="bugSearch" class="bug-search" data-i18n-placeholder="searchBugs" placeholder="Search bugs..." oninput="applyBugFilters()">
+    </div>
+    <select id="filterProject" class="bug-filter-select" onchange="applyBugFilters()">
+      <option value="" data-i18n="allProjects">All Projects</option>
+    </select>
+    <select id="filterStatus" class="bug-filter-select" onchange="applyBugFilters()">
+      <option value="" data-i18n="allStatus">All Status</option>
+      <option value="open" data-i18n="open">Open</option>
+      <option value="investigating" data-i18n="investigating">Investigating</option>
+      <option value="fixing" data-i18n="fixing">Fixing</option>
+      <option value="fix_complete" data-i18n="fix_complete">Fix Complete</option>
+      <option value="to_verify" data-i18n="to_verify">To Verify</option>
+      <option value="resolved" data-i18n="resolved">Resolved</option>
+      <option value="closed" data-i18n="closed">Closed</option>
+      <option value="wontfix" data-i18n="wontfix">Won't Fix</option>
+    </select>
+    <select id="filterAssignee" class="bug-filter-select" onchange="applyBugFilters()">
+      <option value="" data-i18n="allAssignees">All Assignees</option>
+    </select>
+    <div class="view-toggle">
+      <button class="view-btn active" id="viewPipeline" onclick="setView('pipeline')" title="Pipeline view">▥</button>
+      <button class="view-btn" id="viewList" onclick="setView('list')" title="List view">☰</button>
+    </div>
+  </div>
+
+  <!-- Pipeline view (status columns) -->
+  <main id="pipelineView" class="pipeline-view">
+    <div class="pipeline-col" data-status="open">
+      <div class="pipeline-col-header">
+        <span class="pipeline-dot dot-open"></span>
+        <span data-i18n="open">Open</span>
+        <span class="pipeline-count" id="pipeOpen">0</span>
+      </div>
+      <div class="pipeline-cards" id="cardsOpen"></div>
+    </div>
+    <div class="pipeline-col" data-status="investigating">
+      <div class="pipeline-col-header">
+        <span class="pipeline-dot dot-investigating"></span>
+        <span data-i18n="investigating">Investigating</span>
+        <span class="pipeline-count" id="pipeInvestigating">0</span>
+      </div>
+      <div class="pipeline-cards" id="cardsInvestigating"></div>
+    </div>
+    <div class="pipeline-col" data-status="fixing">
+      <div class="pipeline-col-header">
+        <span class="pipeline-dot dot-fixing"></span>
+        <span data-i18n="fixing">Fixing</span>
+        <span class="pipeline-count" id="pipeFixing">0</span>
+      </div>
+      <div class="pipeline-cards" id="cardsFixing"></div>
+    </div>
+    <div class="pipeline-col" data-status="fix_complete">
+      <div class="pipeline-col-header">
+        <span class="pipeline-dot dot-fix_complete"></span>
+        <span data-i18n="fix_complete">Fix Complete</span>
+        <span class="pipeline-count" id="pipeFix_complete">0</span>
+      </div>
+      <div class="pipeline-cards" id="cardsFix_complete"></div>
+    </div>
+    <div class="pipeline-col" data-status="to_verify">
+      <div class="pipeline-col-header">
+        <span class="pipeline-dot dot-to_verify"></span>
+        <span data-i18n="to_verify">To Verify</span>
+        <span class="pipeline-count" id="pipeTo_verify">0</span>
+      </div>
+      <div class="pipeline-cards" id="cardsTo_verify"></div>
+    </div>
+    <div class="pipeline-col" data-status="resolved">
+      <div class="pipeline-col-header">
+        <span class="pipeline-dot dot-resolved"></span>
+        <span data-i18n="resolved">Resolved</span>
+        <span class="pipeline-count" id="pipeResolved">0</span>
+      </div>
+      <div class="pipeline-cards" id="cardsResolved"></div>
+    </div>
+    <div class="pipeline-col pipeline-col-closed" data-status="closed">
+      <div class="pipeline-col-header">
+        <span class="pipeline-dot dot-closed"></span>
+        <span data-i18n="closed">Closed</span>
+        <span class="pipeline-count" id="pipeClosed">0</span>
+      </div>
+      <div class="pipeline-cards" id="cardsClosed"></div>
+    </div>
+  </main>
+
+  <!-- List view -->
+  <main id="listView" class="list-view" style="display:none">
+    <table class="bug-table">
+      <thead>
+        <tr>
+          <th class="col-sev" data-i18n="severity">Severity</th>
+          <th class="col-title" data-i18n="title">Title</th>
+          <th class="col-status" data-i18n="status">Status</th>
+          <th class="col-assignee" data-i18n="assignee">Assignee</th>
+          <th class="col-project" data-i18n="projects">Project</th>
+          <th class="col-feature" data-i18n="feature">Feature</th>
+          <th class="col-tasks" data-i18n="tasks">Tasks</th>
+          <th class="col-date" data-i18n="date">Date</th>
+        </tr>
+      </thead>
+      <tbody id="bugTableBody"></tbody>
+    </table>
+  </main>
+</div>
+
+<!-- Bug detail side panel -->
+<div id="bugPanel" class="bug-panel hidden">
+  <div class="bug-panel-overlay" onclick="closeBugPanel()"></div>
+  <div class="bug-panel-content" id="bugPanelContent"></div>
+</div>
+
+<!-- Create/Edit modal -->
+<div id="modal" class="modal hidden" onclick="if(event.target===this)closeModal()">
+  <div class="modal-content" id="modalContent"></div>
+</div>
+
+<!-- User picker modal (reused from main app) -->
+<div id="userModal" class="modal hidden" onclick="if(event.target===this)document.getElementById('userModal').classList.add('hidden')">
+  <div class="modal-content" id="userModalContent"></div>
+</div>
+
+<div id="toasts" class="toast-container"></div>
+<script src="/static/i18n.js"></script>
+<script src="/static/bugs.js"></script>
+</body>
+</html>

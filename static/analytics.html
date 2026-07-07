@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Analytics — ConvergenceKanban</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600;700&family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/static/analytics.css">
+</head>
+<body>
+<!-- Background texture -->
+<div class="bg-grid"></div>
+
+<div id="app">
+  <!-- Header -->
+  <header class="header">
+    <div class="header-left">
+      <a href="/" class="back-link">&larr;</a>
+      <h1 data-i18n="analytics">Analytics</h1>
+    </div>
+    <div class="header-right">
+      <div class="header-actions">
+        <button class="btn btn-sm" onclick="showUserPicker()" id="userBtn" title="Switch user">login</button>
+        <button class="btn btn-sm" onclick="cycleFontSize()" id="fontSizeBtn" title="Font size">A&#8322;</button>
+        <button class="btn btn-sm" onclick="toggleTheme()" id="themeBtn" title="Toggle theme">&#9728;&#65039;</button>
+        <button class="btn btn-sm" onclick="toggleLang()" id="langBtn">&#20013;&#25991;</button>
+        <button class="btn btn-sm" onclick="refreshAll()" id="refreshBtn" title="Refresh">&#8635;</button>
+      </div>
+    </div>
+  </header>
+
+  <!-- Controls bar -->
+  <div class="analytics-toolbar">
+    <div class="date-range-pills">
+      <button class="range-pill" data-days="7" onclick="setRange(7)">7<span data-i18n="days">d</span></button>
+      <button class="range-pill" data-days="14" onclick="setRange(14)">14<span data-i18n="days">d</span></button>
+      <button class="range-pill active" data-days="30" onclick="setRange(30)">30<span data-i18n="days">d</span></button>
+      <button class="range-pill" data-days="90" onclick="setRange(90)">90<span data-i18n="days">d</span></button>
+    </div>
+    <select id="projectFilter" class="analytics-filter-select" onchange="refreshAll()">
+      <option value="" data-i18n="allProjects">All Projects</option>
+    </select>
+  </div>
+
+  <!-- Charts grid -->
+  <div class="charts-grid">
+    <!-- Burndown / Burnup -->
+    <div class="chart-panel chart-panel-wide" id="burndownPanel">
+      <div class="chart-panel-header">
+        <span class="chart-panel-title" data-i18n="burndown">Burndown</span>
+        <span class="chart-panel-subtitle" id="burndownSubtitle"></span>
+      </div>
+      <div class="chart-canvas-wrap">
+        <canvas id="burndownCanvas"></canvas>
+      </div>
+      <div class="chart-empty hidden" id="burndownEmpty" data-i18n="noSnapshots">No snapshot data yet.</div>
+    </div>
+
+    <!-- Bug Trends -->
+    <div class="chart-panel" id="bugTrendsPanel">
+      <div class="chart-panel-header">
+        <span class="chart-panel-title" data-i18n="bugTrends">Bug Trends</span>
+      </div>
+      <div class="chart-canvas-wrap">
+        <canvas id="bugTrendsCanvas"></canvas>
+      </div>
+      <div class="chart-empty hidden" id="bugTrendsEmpty" data-i18n="noBugData">No bug data.</div>
+    </div>
+
+    <!-- Workload -->
+    <div class="chart-panel" id="workloadPanel">
+      <div class="chart-panel-header">
+        <span class="chart-panel-title" data-i18n="tasksByAssignee">Tasks by Assignee</span>
+      </div>
+      <div class="chart-canvas-wrap">
+        <canvas id="workloadCanvas"></canvas>
+      </div>
+      <div class="chart-empty hidden" id="workloadEmpty" data-i18n="noTaskData">No task data.</div>
+    </div>
+
+    <!-- Blocker Aging -->
+    <div class="chart-panel" id="blockerPanel">
+      <div class="chart-panel-header">
+        <span class="chart-panel-title" data-i18n="blockerAging">Blocker Aging</span>
+      </div>
+      <div class="chart-canvas-wrap">
+        <canvas id="blockerCanvas"></canvas>
+      </div>
+      <div class="chart-empty hidden" id="blockerEmpty" data-i18n="noBlockers">No active blockers.</div>
+    </div>
+  </div>
+
+  <!-- Gantt Chart -->
+  <div class="chart-panel chart-panel-wide" id="ganttPanel">
+    <div class="chart-panel-header">
+      <span class="chart-panel-title" data-i18n="ganttChart">Gantt Chart</span>
+      <span class="chart-panel-subtitle" id="ganttSubtitle"></span>
+    </div>
+    <div class="gantt-filters">
+      <div class="gantt-filter-group">
+        <label class="gantt-filter-label" data-i18n="projects">Projects:</label>
+        <div class="gantt-project-chips" id="ganttProjectChips"></div>
+      </div>
+      <div class="gantt-filter-group">
+        <label class="gantt-filter-label" data-i18n="workstream">Workstream:</label>
+        <select id="ganttWsFilter" class="analytics-filter-select" onchange="refreshGantt()">
+          <option value="" data-i18n="allWorkstreams">All Workstreams</option>
+        </select>
+      </div>
+    </div>
+    <div class="chart-canvas-wrap" style="min-height:200px;max-height:600px;overflow-y:auto" id="ganttWrap">
+      <canvas id="ganttCanvas"></canvas>
+    </div>
+    <div class="chart-empty hidden" id="ganttEmpty" data-i18n="noTaskData">No task data.</div>
+  </div>
+
+  <!-- Activity Timeline -->
+  <div class="activity-section">
+    <div class="activity-section-header">
+      <span class="chart-panel-title" data-i18n="activityTimeline">Activity Timeline</span>
+      <div class="activity-filters">
+        <select id="activityEntityType" class="analytics-filter-select" onchange="loadActivity()">
+          <option value="" data-i18n="allTypes">All Types</option>
+          <option value="task" data-i18n="task">Task</option>
+          <option value="project" data-i18n="project">Project</option>
+          <option value="workstream" data-i18n="workstream">Workstream</option>
+          <option value="blocker" data-i18n="blocker">Blocker</option>
+          <option value="bug" data-i18n="bug">Bug</option>
+          <option value="comment" data-i18n="comment">Comment</option>
+          <option value="analytics" data-i18n="analytics">Analytics</option>
+        </select>
+        <select id="activityActor" class="analytics-filter-select" onchange="loadActivity()">
+          <option value="" data-i18n="allActors">All Actors</option>
+        </select>
+      </div>
+    </div>
+    <div class="activity-timeline" id="activityTimeline">
+      <div class="chart-empty" data-i18n="loading">Loading...</div>
+    </div>
+  </div>
+</div>
+
+<!-- User picker modal -->
+<div id="userModal" class="modal hidden" onclick="if(event.target===this)document.getElementById('userModal').classList.add('hidden')">
+  <div class="modal-content" id="userModalContent"></div>
+</div>
+
+<script src="/static/i18n.js"></script>
+<script src="/static/analytics.js"></script>
+</body>
+</html>

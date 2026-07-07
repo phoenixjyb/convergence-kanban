@@ -1,0 +1,6 @@
+{
+  "_comment": "Optional: maps a Feishu Bitable 'feature' (功能) field value to a kanban project_id. Used by feishu_sync.py to auto-assign new bugs pulled from Feishu to the right project. Rename this file to feature_to_project.json to activate.",
+  "Navigation":   "REPLACE_WITH_PROJECT_ID_1",
+  "Localization": "REPLACE_WITH_PROJECT_ID_2",
+  "Perception":   "REPLACE_WITH_PROJECT_ID_3"
+}
