@@ -31,6 +31,7 @@ _FORMATS = {
     "arch": "AGENT_ARCHITECTURE_zh.md",
     "team": "TEAM_WORKFLOW.md",
     "workflow": "TEAM_WORKFLOW.md",
+    "issues": "ISSUES_WORKFLOW.md",
 }
 
 
@@ -46,6 +47,7 @@ def get_agent_guide(
                 "quickstart": "AGENT_QUICKSTART.md — concise reference (~7KB)",
                 "architecture": "AGENT_ARCHITECTURE_zh.md — system architecture explainer (Chinese, ~12KB)",
                 "team": "TEAM_WORKFLOW.md — human workflow for task, bug, and sync hygiene",
+                "issues": "ISSUES_WORKFLOW.md — cross-team issues and Feishu workflow",
             },
             "usage": [
                 "curl <kanban-host>/api/agent-guide",

@@ -5,7 +5,7 @@ from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Request
 
-from db import get_db
+from db import derive_workstream_state, get_db
 from helpers import get_actor, log_activity, now_iso, _require_human
 from models import WorkstreamCreate, WorkstreamUpdate, ReorderRequest
 
@@ -22,7 +22,20 @@ def list_workstreams(project_id: Optional[str] = None):
             ).fetchall()
         else:
             rows = conn.execute("SELECT * FROM workstreams WHERE deleted_at IS NULL ORDER BY sort_order, title_en").fetchall()
-        return [dict(r) for r in rows]
+        result = []
+        for row in rows:
+            statuses = conn.execute(
+                "SELECT status FROM tasks WHERE workstream_id=? AND deleted_at IS NULL",
+                (row["id"],),
+            ).fetchall()
+            state = derive_workstream_state(r["status"] for r in statuses)
+            result.append({
+                **dict(row),
+                "status": state["status"],
+                "status_source": state["status_source"],
+                "task_stats": state,
+            })
+        return result
 
 
 @router.post("/workstreams")
@@ -37,10 +50,10 @@ def create_workstream(w: WorkstreamCreate, request: Request):
         conn.execute(
             "INSERT INTO workstreams (id, project_id, title_en, title_zh, owner, priority, status, summary_en, summary_zh) "
             "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (wid, w.project_id, w.title_en, w.title_zh, w.owner, w.priority, w.status, w.summary_en, w.summary_zh)
+            (wid, w.project_id, w.title_en, w.title_zh, w.owner, w.priority, "planned", w.summary_en, w.summary_zh)
         )
         log_activity(conn, "workstream", wid, "created", actor=actor, detail=w.title_en)
-        return {"id": wid}
+        return {"id": wid, "status": "planned", "status_source": "tasks"}
 
 
 @router.put("/workstreams/reorder")
@@ -57,6 +70,8 @@ def reorder_workstreams(req: ReorderRequest, request: Request):
 
 @router.put("/workstreams/{wid}")
 def update_workstream(wid: str, w: WorkstreamUpdate, request: Request):
+    if w.status is not None:
+        raise HTTPException(400, "Workstream status is derived automatically from task statuses")
     fields, vals = [], []
     for k, v in w.model_dump(exclude_none=True).items():
         fields.append(f"{k}=?")

@@ -90,7 +90,7 @@ def export_bugs(project_id: Optional[str] = None, severity: Optional[str] = None
 VALID_TASK_STATUSES = {"backlog", "todo", "doing", "in_review", "done"}
 VALID_PRIORITIES = {"critical", "high", "medium", "low"}
 VALID_BUG_SEVERITIES = {"critical", "high", "medium", "low"}
-VALID_BUG_STATUSES = {"open", "investigating", "fixing", "fix_complete", "to_verify", "resolved", "closed", "wontfix"}
+VALID_BUG_STATUSES = {"open", "hold", "investigating", "fixing", "fix_complete", "to_verify", "resolved", "closed", "wontfix"}
 
 
 @router.post("/import/tasks")

@@ -13,7 +13,7 @@ router = APIRouter(prefix="/api", tags=["comments"])
 
 @router.get("/comments/{entity_type}/{entity_id}")
 def list_comments(entity_type: str, entity_id: str):
-    valid = {"task", "workstream", "blocker", "bug"}
+    valid = {"task", "workstream", "blocker", "bug", "issue"}
     if entity_type not in valid:
         raise HTTPException(400, f"Invalid entity_type: {entity_type}")
     with get_db() as conn:
@@ -30,12 +30,16 @@ def list_comments(entity_type: str, entity_id: str):
 
 @router.post("/comments/{entity_type}/{entity_id}")
 def add_comment(entity_type: str, entity_id: str, c: CommentCreate, request: Request):
-    valid = {"task", "workstream", "blocker", "bug"}
+    valid = {"task", "workstream", "blocker", "bug", "issue"}
     if entity_type not in valid:
         raise HTTPException(400, f"Invalid entity_type: {entity_type}")
     cid = uuid.uuid4().hex[:12]
     actor = get_actor(request)
     with get_db() as conn:
+        if entity_type == "issue" and not conn.execute(
+            "SELECT id FROM issues WHERE id=? AND deleted_at IS NULL", (entity_id,)
+        ).fetchone():
+            raise HTTPException(404, "Issue not found")
         conn.execute(
             "INSERT INTO comments (id, entity_type, entity_id, author, body, created_at) VALUES (?,?,?,?,?,?)",
             (cid, entity_type, entity_id, actor, c.body, now_iso())

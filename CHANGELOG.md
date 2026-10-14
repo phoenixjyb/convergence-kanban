@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Added validated task and blocker sync-conflict arbitration with bilingual title
+  mapping, active-parent/date checks, task terminal-status governance, blocker
+  resolution timestamps, and atomic bulk resolution. Bug conflict `task_ids`
+  now validates unique active task IDs and updates both junction links and the
+  legacy primary task field.
+- Added validated, human-only arbitration for supported Feishu bug conflict
+  fields, including fix metadata, reproduction steps, and attachment JSON;
+  invalid or stale bug choices remain unresolved. Documented stable-ID retries,
+  unresolved-conflict holds, and blank-row/status handling in English and Chinese.
+- Added the bilingual `hold` / Feishu `Hold` bug status as an off-flow,
+  unresolved pause in bug filters, list labels, and a visually separate
+  pipeline column. Documented that RD Reporter/Assignee are plain-text
+  identities while QA Person fields remain person fields.
+
+### Changed
+
+- Hardened existing linked Feishu bug sync with acknowledgement-gated
+  checkpoint/local apply and preservation of precise local statuses when Feishu's
+  projected status matches, and handling of blank or unsupported statuses and
+  historical missing fix metadata.
+- Expanded agent and team workflow docs for Feishu QA tickets: agents use the
+  kanban API instead of personal Feishu tokens, the backend owns Feishu wiki
+  page creation, and common 401/503/wiki-permission failures are documented.
+- Added bilingual EN/ZH explanations to the team workflow, agent quickstart,
+  full agent guide, and repo-local agent instruction files.
+
 ## [0.3.2] — 2026-07-07
 
 ### Added

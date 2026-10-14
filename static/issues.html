@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Top Issues — ConvergenceKanban</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fira+Code:wght@400;500;600;700&family=Outfit:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/static/issues.css">
+</head>
+<body>
+<div class="bg-grid"></div>
+<div id="app" class="issues-app">
+  <header class="header">
+    <div class="header-left">
+      <a href="/" class="back-link" aria-label="Back to dashboard">&larr;</a>
+      <h1 data-copy="title">Top Issues</h1>
+      <span class="issue-count" id="issueCount">0</span>
+    </div>
+    <div class="header-right">
+      <div class="header-actions">
+        <button class="btn btn-sm" id="userBtn" type="button" title="Switch user">Login</button>
+        <button class="btn btn-sm" id="themeBtn" type="button" title="Toggle theme">☀️</button>
+        <button class="btn btn-sm" id="langBtn" type="button">中文</button>
+        <button class="btn btn-sm btn-primary" id="newIssueBtn" type="button">＋ <span data-copy="newIssue">New issue</span></button>
+      </div>
+    </div>
+  </header>
+
+  <section class="issues-toolbar" aria-label="Issue filters">
+    <label class="search-box"><span aria-hidden="true">⌕</span><input id="searchInput" type="search" autocomplete="off" data-placeholder="search" placeholder="Search issues"></label>
+    <select id="categoryFilter" aria-label="Category"></select>
+    <select id="statusFilter" aria-label="Status"></select>
+    <select id="ownerFilter" aria-label="Owner"></select>
+    <select id="priorityFilter" aria-label="Priority"></select>
+    <select id="attentionFilter" aria-label="Attention"></select>
+    <label class="deleted-toggle"><input type="checkbox" id="deletedToggle"><span data-copy="showDeleted">Show deleted</span></label>
+    <button class="btn btn-sm" id="refreshBtn" type="button" title="Refresh">↻</button>
+  </section>
+
+  <div id="pageError" class="issues-message error-message" role="alert" hidden></div>
+  <div id="pageStatus" class="issues-message" role="status" hidden></div>
+  <main class="issues-table-wrap">
+    <table class="issues-table">
+      <thead><tr>
+        <th class="rank-col" data-copy="rank">Rank</th><th data-copy="issue">Issue</th><th data-copy="category">Category</th>
+        <th data-copy="priority">Priority</th><th data-copy="status">Status</th><th data-copy="owner">Owner</th>
+        <th data-copy="dueDate">Due</th><th data-copy="project">Project</th>
+      </tr></thead>
+      <tbody id="issueRows"><tr><td colspan="8" class="table-empty" data-copy="loading">Loading issues…</td></tr></tbody>
+    </table>
+  </main>
+</div>
+
+<div class="dialog-backdrop" id="dialogBackdrop" hidden>
+  <section class="issue-dialog" role="dialog" aria-modal="true" aria-labelledby="dialogTitle">
+    <header class="dialog-header"><h2 id="dialogTitle"></h2><button class="icon-btn" id="closeDialogBtn" type="button" aria-label="Close">×</button></header>
+    <div id="dialogBody"></div>
+  </section>
+</div>
+<div class="dialog-backdrop" id="userBackdrop" hidden>
+  <section class="user-dialog" role="dialog" aria-modal="true" aria-labelledby="userDialogTitle">
+    <header class="dialog-header"><h2 id="userDialogTitle" data-copy="selectUser">Select user</h2><button class="icon-btn" id="closeUserBtn" type="button" aria-label="Close">×</button></header>
+    <div id="userOptions" class="user-options"></div>
+    <div id="userError" class="error-message" role="alert" hidden></div>
+  </section>
+</div>
+<script src="/static/i18n.js"></script>
+<script src="/static/issues.js"></script>
+</body>
+</html>

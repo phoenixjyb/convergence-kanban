@@ -172,6 +172,7 @@ sections 4 & 5 for the walkthrough.
 [→ Full agent integration guide (English)](docs/AGENT_INSTRUCTIONS.md)
 [→ Short reference](docs/AGENT_QUICKSTART.md)
 [→ Team workflow](docs/TEAM_WORKFLOW.md)
+[→ Top Issues workflow / 重点问题](docs/ISSUES_WORKFLOW.md)
 [→ Architecture (Chinese)](docs/AGENT_ARCHITECTURE_zh.md)
 
 ## Compared to other kanbans

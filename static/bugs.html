@@ -28,6 +28,7 @@
         <button class="btn btn-sm" onclick="cycleFontSize()" id="fontSizeBtn" title="Font size">A₂</button>
         <button class="btn btn-sm" onclick="toggleTheme()" id="themeBtn" title="Toggle theme">☀️</button>
         <button class="btn btn-sm" onclick="toggleLang()" id="langBtn">中文</button>
+        <a href="/issues" class="btn btn-sm" title="Top Issues">Top Issues</a>
         <button class="btn btn-sm btn-primary" onclick="showCreateBug()" id="newBugBtn">
           <span data-i18n="newBug">+ Bug</span>
         </button>
@@ -79,6 +80,7 @@
       <option value="fixing" data-i18n="fixing">Fixing</option>
       <option value="fix_complete" data-i18n="fix_complete">Fix Complete</option>
       <option value="to_verify" data-i18n="to_verify">To Verify</option>
+      <option value="hold" data-i18n="hold">On Hold</option>
       <option value="resolved" data-i18n="resolved">Resolved</option>
       <option value="closed" data-i18n="closed">Closed</option>
       <option value="wontfix" data-i18n="wontfix">Won't Fix</option>
@@ -149,6 +151,14 @@
         <span class="pipeline-count" id="pipeClosed">0</span>
       </div>
       <div class="pipeline-cards" id="cardsClosed"></div>
+    </div>
+    <div class="pipeline-col pipeline-col-hold" data-status="hold">
+      <div class="pipeline-col-header">
+        <span class="pipeline-dot dot-hold"></span>
+        <span data-i18n="hold">On Hold</span>
+        <span class="pipeline-count" id="pipeHold">0</span>
+      </div>
+      <div class="pipeline-cards" id="cardsHold"></div>
     </div>
   </main>
 
