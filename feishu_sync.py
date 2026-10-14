@@ -1175,6 +1175,36 @@ def _record_conflicts(db, entity_type, entity_id, local_vals, remote_vals, local
     return count
 
 
+def _record_bug_conflicts(db, kid, local_vals, remote_vals, local_ts, remote_ts, pending_only=False):
+    for field, value in local_vals.items():
+        lv, rv = str(value or ""), str(remote_vals.get(field) or "")
+        existing = db.execute(
+            "SELECT id FROM sync_conflicts WHERE entity_type='bug' AND entity_id=? AND field_name=? AND resolved=0",
+            (kid, field)).fetchone()
+        if existing:
+            db.execute("UPDATE sync_conflicts SET local_value=?,remote_value=?,local_updated=?,remote_updated=? WHERE id=?",
+                       (lv, rv, local_ts, remote_ts, existing["id"]))
+        elif lv != rv and not pending_only:
+            db.execute("INSERT INTO sync_conflicts (id,entity_type,entity_id,field_name,local_value,remote_value,local_updated,remote_updated) "
+                       "VALUES (?,'bug',?,?,?,?,?,?)", (uuid.uuid4().hex, kid, field, lv, rv, local_ts, remote_ts))
+    db.commit()
+
+
+def _bug_choices_still_valid(db, kid, local_vals, remote_vals, last_sync, remote_ts):
+    """Resolved choices authorize a push only while their remote snapshots match."""
+    differing = [key for key in local_vals if local_vals[key] != remote_vals[key]]
+    if not differing:
+        return False
+    for field in differing:
+        choice = db.execute(
+            "SELECT remote_value,resolved_at FROM sync_conflicts WHERE entity_type='bug' AND entity_id=? "
+            "AND field_name=? AND resolved=1 ORDER BY resolved_at DESC,rowid DESC LIMIT 1", (kid, field)).fetchone()
+        if (not choice or choice["resolved_at"] <= last_sync or remote_ts > choice["resolved_at"]
+                or choice["remote_value"] != str(remote_vals[field] or "")):
+            return False
+    return True
+
+
 def sync_members_v2(db):
     """Sync users to the Members table. Returns name->record_id map for DuplexLinks."""
     members_tid = _state.get("members_table")
@@ -1348,6 +1378,11 @@ def sync_bugs_v2(db, proj_record_map, table_key="bugs_table",
             "updated_at": b["updated_at"] or b["created_at"] or "",
         }
 
+    imports = {row["record_id"]: dict(row) for row in db.execute(
+        "SELECT record_id,bug_id,imported_at,linked FROM feishu_bug_imports WHERE profile=? AND table_id=?",
+        (_profile, bugs_tid))}
+    pending_import_ids = {row["bug_id"] for row in imports.values() if not row["linked"]}
+
     # ── Build task record maps (both directions) ─────────────────────────
     tasks_tid = _state.get("tasks_table")
     task_record_map = {}
@@ -1362,12 +1397,18 @@ def sync_bugs_v2(db, proj_record_map, table_key="bugs_table",
 
     # ── Get remote records ───────────────────────────────────────────────
     remote_records, remote_complete = list_records(bugs_tid)
+    if not remote_complete:
+        print("  [sync-bugs] incomplete remote read; skipping cycle", flush=True)
+        return
     if remote_complete:
         remote_records = _dedupe_remote_records(remote_records, bugs_tid, label="bugs")
     remote_by_kid = {}
     remote_new = []
     for rec in remote_records:
         kid = _text(rec.get("fields", {}).get("kanban_id", ""))
+        imported = imports.get(rec["record_id"])
+        if not kid and imported:
+            kid = imported["bug_id"]
         if kid:
             remote_by_kid[kid] = rec
         else:
@@ -1458,6 +1499,19 @@ def sync_bugs_v2(db, proj_record_map, table_key="bugs_table",
             if remote_status and remote_status not in FEISHU_TO_STATUS:
                 print("  [sync-bugs] unsupported remote status; preserving record", flush=True)
                 continue
+            imported = imports.get(remote["record_id"])
+            if imported and imported["bug_id"] == kid:
+                if not _text(rf.get("kanban_id")):
+                    if not _update_bug_record(bugs_tid, remote["record_id"], {
+                        "kanban_id": kid, "Bug ID": local["display_id"], "updated_at": now_iso()
+                    }):
+                        continue
+                    rf["kanban_id"] = kid
+                    rf["Bug ID"] = local["display_id"]
+                    remote_display_id = local["display_id"]
+                last_sync_ts_bugs.setdefault(kid, imported["imported_at"])
+                db.execute("UPDATE feishu_bug_imports SET linked=1 WHERE profile=? AND table_id=? AND record_id=?",
+                           (_profile, bugs_tid, remote["record_id"]))
 
             # Older synced Feishu rows can have kanban_id populated while the
             # generated human-facing Bug ID column is still blank, or can retain
@@ -1485,7 +1539,7 @@ def sync_bugs_v2(db, proj_record_map, table_key="bugs_table",
 
             # Feishu has fewer states: retain a precise local state when its
             # projection already matches (e.g. investigating -> In Progress).
-            r_status = (local["status"] if STATUS_TO_FEISHU.get(local["status"]) == remote_status
+            r_status = (local["status"] if not remote_status or STATUS_TO_FEISHU.get(local["status"]) == remote_status
                         else FEISHU_TO_STATUS.get(remote_status, "open"))
             r_severity = FEISHU_TO_SEV.get(_text(rf.get("优先级", "")), "medium")
             r_feature = _text(rf.get("功能", ""))
@@ -1564,13 +1618,21 @@ def sync_bugs_v2(db, proj_record_map, table_key="bugs_table",
             last_sync = last_sync_ts_bugs.get(kid, "")
             local_changed = local["updated_at"] > last_sync if last_sync else False
             remote_changed = remote_ts > last_sync if last_sync else False
+            pending = db.execute(
+                "SELECT 1 FROM sync_conflicts WHERE entity_type='bug' AND entity_id=? AND resolved=0 LIMIT 1", (kid,)).fetchone()
+            if pending:
+                _record_bug_conflicts(db, kid, local_vals, remote_vals, local["updated_at"], remote_ts, pending_only=True)
+                continue
+            if _bug_choices_still_valid(db, kid, local_vals, remote_vals, last_sync, remote_ts):
+                local_changed, remote_changed = True, False
 
             if remote_vals == local_vals:
                 pass  # In sync — nothing to do
             elif local_changed and remote_changed:
-                _record_conflicts(db, "bug", kid, local_vals, remote_vals,
+                _record_bug_conflicts(db, kid, local_vals, remote_vals,
                                   local["updated_at"], remote_ts)
                 print(f"  [sync-bugs] CONFLICT {kid} local_s={local_vals.get('status')} remote_s={remote_vals.get('status')}", flush=True)
+                continue
             elif local_changed:
                 # Only local changed — push to Feishu
                 ts = now_iso()
@@ -1618,6 +1680,11 @@ def sync_bugs_v2(db, proj_record_map, table_key="bugs_table",
 
             last_sync_ts_bugs[kid] = now_iso()
         else:
+            if kid in pending_import_ids:
+                # Never create a second remote row while an import's source
+                # record is missing or was omitted by a partial read.
+                print("  [sync-bugs] import source not visible; retaining local identity", flush=True)
+                continue
             # Bug exists in kanban but not in Feishu.
             # Check if it was previously synced — if so, the user deleted it
             # on Feishu and we should soft-delete locally instead of recreating.
@@ -1636,7 +1703,7 @@ def sync_bugs_v2(db, proj_record_map, table_key="bugs_table",
     for rec in remote_new:
         f = rec.get("fields", {})
         title = _text(f.get("Title", ""))
-        if not title:
+        if not title.strip():
             continue
         remote_status = _text(f.get("Status", ""))
         if remote_status and remote_status not in FEISHU_TO_STATUS:
@@ -1712,15 +1779,20 @@ def sync_bugs_v2(db, proj_record_map, table_key="bugs_table",
         if remote_task_kids:
             _sync_bug_task_links(db, kid, remote_task_kids)
             db.execute("UPDATE bugs SET task_id=? WHERE id=?", (remote_task_kids[0], kid))
-        # Generate display_id for the new bug and push it back
-        _new_display_id = ""
-        try:
-            from helpers import generate_bug_display_id
-            _new_display_id = generate_bug_display_id(db, source_filter)
-            db.execute("UPDATE bugs SET display_id=? WHERE id=?", (_new_display_id, kid))
-        except Exception:
-            pass
-        update_record(bugs_tid, rec["record_id"], {"kanban_id": kid, "Bug ID": _new_display_id, "updated_at": now_iso()})
+        from helpers import generate_bug_display_id
+        _new_display_id = generate_bug_display_id(db, source_filter)
+        db.execute("UPDATE bugs SET display_id=? WHERE id=?", (_new_display_id, kid))
+        imported_at = now_iso()
+        db.execute("INSERT INTO feishu_bug_imports (profile,table_id,record_id,bug_id,imported_at) VALUES (?,?,?,?,?)",
+                   (_profile, bugs_tid, rec["record_id"], kid, imported_at))
+        # Commit identity before the remote call: even an ambiguous response or
+        # process restart must retry this same ID, not import a second bug.
+        db.commit()
+        if _update_bug_record(bugs_tid, rec["record_id"], {"kanban_id": kid, "Bug ID": _new_display_id, "updated_at": imported_at}):
+            db.execute("UPDATE feishu_bug_imports SET linked=1 WHERE profile=? AND table_id=? AND record_id=?",
+                       (_profile, bugs_tid, rec["record_id"]))
+            last_sync_ts_bugs[kid] = imported_at
+            remote_by_kid[kid] = rec
         created_local += 1
 
     # Clean up soft-deletes — only push deletions to Feishu with complete read

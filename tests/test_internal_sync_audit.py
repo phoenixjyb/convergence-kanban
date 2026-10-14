@@ -51,3 +51,15 @@ def test_audit_reports_hold_gap_without_content_or_database_writes():
         assert report["qa_bugs"]["differences"][0]["fields"] == ["status"]
         assert "private content" not in json.dumps(report)
         assert db.total_changes == before
+
+
+def test_audit_ignores_blank_remote_status_without_modifying_it():
+    with database() as db:
+        db.execute("INSERT INTO bugs VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                   ("test", "BUG-261014-001", "manual", None, "2026-10-14 12:00:00", "title", "hold",
+                    "", "", "", "", "", "", ""))
+        fields = {"kanban_id": "test", "Bug ID": "BUG-261014-001", "Title": "title"}
+        report = audit_module.audit(db, transport([{"fields": fields}]))
+        assert report['qa_bugs']['differences'] == []
+        assert report['qa_bugs']['ignored_blank_statuses'] == 1
+        assert 'Status' not in fields

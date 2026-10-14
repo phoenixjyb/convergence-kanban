@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added validated, human-only arbitration for supported Feishu bug conflict
+  fields, including fix metadata, reproduction steps, and attachment JSON;
+  invalid or stale bug choices remain unresolved. Documented stable-ID retries,
+  unresolved-conflict holds, and blank-row/status handling in English and Chinese.
 - Added the bilingual `hold` / Feishu `Hold` bug status as an off-flow,
   unresolved pause in bug filters, list labels, and a visually separate
   pipeline column. Documented that RD Reporter/Assignee are plain-text

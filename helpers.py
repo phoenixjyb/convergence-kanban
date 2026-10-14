@@ -146,6 +146,83 @@ def apply_issue_conflicts(conn, choices, actor):
         conn.execute("UPDATE sync_conflicts SET local_value=? WHERE id=?", (str(value or ""), conflict["id"]))
 
 
+def apply_bug_conflicts(conn, choices, actor):
+    """Validate and apply Feishu bug conflict choices as one entity update."""
+    from models import BugCreate
+    from pydantic import ValidationError
+
+    if not choices:
+        return
+    bug_id = choices[0][0]["entity_id"]
+    _require_human(conn, actor, "resolve bug sync conflicts", "bug", bug_id)
+    row = conn.execute(
+        "SELECT * FROM bugs WHERE id=? AND deleted_at IS NULL", (bug_id,)
+    ).fetchone()
+    if not row:
+        raise HTTPException(404, "Bug not found or deleted")
+
+    allowed_fields = {
+        "title", "status", "assignee", "severity", "reporter", "environment",
+        "steps", "feature", "repro_rate", "issue_time", "issue_version",
+        "device_id", "issue_images", "fix_method", "fix_version", "fix_date",
+    }
+    columns = {"steps": "steps_to_reproduce"}
+    current = dict(row)
+    try:
+        stored_images = current.get("issue_images")
+        current["issue_images"] = json.loads(stored_images) if stored_images else []
+        if not isinstance(current["issue_images"], list):
+            raise ValueError("issue_images must be a JSON list")
+
+        changes = {}
+        resolved_values = []
+        for conflict, value in choices:
+            field = conflict["field_name"]
+            if field not in allowed_fields:
+                raise HTTPException(400, "Unsupported bug conflict field")
+            parsed = value
+            if field == "issue_images":
+                parsed = json.loads(value) if value else []
+                if not isinstance(parsed, list):
+                    raise ValueError("issue_images must be a JSON list")
+                remote_value = conflict["remote_value"]
+                remote_images = json.loads(remote_value) if remote_value else []
+                if not isinstance(remote_images, list):
+                    raise ValueError("remote issue_images must be a JSON list")
+                if parsed != remote_images:
+                    raise HTTPException(
+                        400,
+                        "Issue image choices must match the remote Feishu value",
+                    )
+            model_field = columns.get(field, field)
+            changes[model_field] = parsed
+            resolved_values.append((conflict, parsed))
+
+        BugCreate.model_validate(current | changes)
+    except HTTPException:
+        raise
+    except (ValueError, TypeError, ValidationError):
+        raise HTTPException(400, "Invalid bug conflict value")
+
+    updates = {columns.get(field, field): value for field, value in changes.items()}
+    if "issue_images" in updates:
+        updates["issue_images"] = json.dumps(updates["issue_images"]) if updates["issue_images"] else ""
+    if updates.get("status") in ("resolved", "closed"):
+        updates["resolved_at"] = now_iso()
+    updates["updated_at"] = now_iso()
+    conn.execute(
+        f"UPDATE bugs SET {','.join(k+'=?' for k in updates)} WHERE id=? AND deleted_at IS NULL",
+        [*updates.values(), bug_id],
+    )
+    for conflict, value in resolved_values:
+        if conflict["field_name"] == "issue_images":
+            value = json.dumps(value) if value else ""
+        conn.execute(
+            "UPDATE sync_conflicts SET local_value=? WHERE id=?",
+            (str(value or ""), conflict["id"]),
+        )
+
+
 def _is_bot(conn: sqlite3.Connection, actor: str) -> bool:
     """Check if actor is a bot user.
     Unknown actors (not in users table) are treated as bots unless they are

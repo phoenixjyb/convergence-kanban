@@ -3,7 +3,8 @@
 from fastapi import APIRouter, HTTPException, Request
 
 from db import get_db
-from helpers import _require_human, apply_issue_conflict, apply_issue_conflicts, get_actor, log_activity, now_iso
+from helpers import (_require_human, apply_bug_conflicts, apply_issue_conflict,
+                     apply_issue_conflicts, get_actor, log_activity, now_iso)
 from models import ConflictResolve
 
 router = APIRouter(prefix="/api", tags=["sync_conflicts"])
@@ -48,7 +49,9 @@ def resolve_conflict(cid: str, body: ConflictResolve, request: Request):
         field = conflict["field_name"]
         if conflict["entity_type"] == "issue":
             apply_issue_conflict(conn, conflict, value, actor)
-        if table and field and field in allowed_fields:
+        elif conflict["entity_type"] == "bug":
+            apply_bug_conflicts(conn, [(conflict, value)], actor)
+        if table and conflict["entity_type"] != "bug" and field and field in allowed_fields:
             if table == "blockers":
                 # blockers table has no updated_at column
                 conn.execute(f"UPDATE {table} SET {field}=? WHERE id=?",
@@ -72,22 +75,31 @@ def resolve_all_conflicts(body: ConflictResolve, request: Request):
         allowed_fields = {"title", "title_en", "description_en", "status", "assignee",
                           "start_date", "due_date", "notes", "priority", "severity"}
         issue_choices = {}
+        bug_choices = {}
         for c in conflicts:
             if c["entity_type"] == "issue":
                 value = (body.manual_value if body.resolution == "manual"
                          else c["local_value"] if body.resolution == "local" else c["remote_value"])
                 issue_choices.setdefault(c["entity_id"], []).append((c, value))
+            elif c["entity_type"] == "bug":
+                value = (body.manual_value if body.resolution == "manual"
+                         else c["local_value"] if body.resolution == "local" else c["remote_value"])
+                bug_choices.setdefault(c["entity_id"], []).append((c, value))
         for choices in issue_choices.values():
             if any(c["field_name"] == "deleted_at" or (c["field_name"] == "status" and value == "closed") for c, value in choices):
                 _require_human(conn, actor, "close/archive/restore issues")
+        for bug_id in bug_choices:
+            _require_human(conn, actor, "resolve bug sync conflicts", "bug", bug_id)
         for choices in issue_choices.values():
             apply_issue_conflicts(conn, choices, actor)
+        for choices in bug_choices.values():
+            apply_bug_conflicts(conn, choices, actor)
         for c in conflicts:
             value = (body.manual_value if body.resolution == "manual"
                      else c["local_value"] if body.resolution == "local"
                      else c["remote_value"])
             table = table_map.get(c["entity_type"])
-            if table and c["field_name"] and c["field_name"] in allowed_fields:
+            if table and c["entity_type"] != "bug" and c["field_name"] and c["field_name"] in allowed_fields:
                 if table == "blockers":
                     conn.execute(f"UPDATE {table} SET {c['field_name']}=? WHERE id=?",
                                  (value, c["entity_id"]))

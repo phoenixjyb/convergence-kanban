@@ -180,3 +180,156 @@ def test_unknown_remote_status_is_not_silently_imported_as_open(bridge):
     assert tuple(conn.execute('SELECT title,status FROM bugs').fetchone()) == ('Title', 'hold')
     assert conn.execute('SELECT count(*) FROM bugs').fetchone()[0] == 1
     assert not writes
+
+
+@pytest.mark.parametrize('source,table,suffix', [('manual','bugs_table',''), ('agent','rd_bugs_table','_rd')])
+def test_import_retry_keeps_identity_across_restarts_and_lost_state(bridge, monkeypatch, source, table, suffix):
+    conn, records, writes, creates = bridge
+    records.append({'record_id': 'new', 'fields': {'Title': 'Real new bug', 'Status': 'Hold'}})
+    monkeypatch.setattr(sync, 'update_record', lambda *args: {'code': 999})
+    sync.sync_bugs_v2(conn, {}, table, source, suffix)
+    first = dict(conn.execute('SELECT * FROM bugs').fetchone())
+    assert first['display_id'].startswith('BUG-' if source == 'manual' else 'RD-')
+    assert 'last_sync_ts_bugs' + suffix in sync._state
+    assert first['id'] not in sync._state['last_sync_ts_bugs' + suffix]
+    monkeypatch.setattr(sync, '_state', {'bugs_table':'qa','rd_bugs_table':'rd'})
+    sync.sync_bugs_v2(conn, {}, table, source, suffix)
+    assert conn.execute('SELECT count(*) FROM bugs').fetchone()[0] == 1
+    assert not creates
+    monkeypatch.setattr(sync, 'update_record', lambda table, rid, fields: writes.append(fields) or {'code': 0})
+    sync.sync_bugs_v2(conn, {}, table, source, suffix)
+    assert conn.execute('SELECT id,display_id FROM bugs').fetchone()[:] == (first['id'], first['display_id'])
+    assert writes[0]['kanban_id'] == first['id']
+    assert writes[0]['Bug ID'] == first['display_id']
+
+
+def test_ambiguous_import_ack_recovers_by_reading_same_remote_identity(bridge, monkeypatch):
+    conn, records, writes, creates = bridge
+    records.append({'record_id':'new','fields':{'Title':'New bug','Status':'To Do'}})
+    def ambiguous(table, rid, fields):
+        records[0]['fields'].update(fields)
+        return {'code': -1}
+    monkeypatch.setattr(sync, 'update_record', ambiguous)
+    sync.sync_bugs_v2(conn, {})
+    first_id = conn.execute('SELECT id FROM bugs').fetchone()[0]
+    monkeypatch.setattr(sync, '_state', {'bugs_table':'qa','rd_bugs_table':'rd'})
+    monkeypatch.setattr(sync, 'update_record', lambda *args: {'code': 0})
+    sync.sync_bugs_v2(conn, {})
+    assert conn.execute('SELECT count(*) FROM bugs').fetchone()[0] == 1
+    assert records[0]['fields']['kanban_id'] == first_id
+    assert not creates
+
+
+def test_import_identity_is_durable_before_transport_exception(bridge, monkeypatch):
+    conn, records, writes, creates = bridge
+    records.append({'record_id':'new','fields':{'Title':'New bug'}})
+    def crash(*args):
+        raise OSError('simulated lost connection')
+    monkeypatch.setattr(sync, 'update_record', crash)
+    with pytest.raises(OSError):
+        sync.sync_bugs_v2(conn, {})
+    first_id = conn.execute('SELECT id FROM bugs').fetchone()[0]
+    assert conn.execute('SELECT bug_id FROM feishu_bug_imports').fetchone()[0] == first_id
+    conn.rollback()
+    monkeypatch.setattr(sync, 'update_record', lambda *args: {'code':0})
+    sync.sync_bugs_v2(conn, {})
+    assert conn.execute('SELECT count(*) FROM bugs').fetchone()[0] == 1
+
+
+def test_partial_read_cannot_create_duplicate_or_advance_checkpoint(bridge, monkeypatch):
+    conn, records, writes, creates = bridge
+    existing(conn)
+    sync._state['last_sync_ts_bugs'] = {'bug':'2026-10-02 12:00:00'}
+    monkeypatch.setattr(sync, 'list_records', lambda table: ([], False))
+    sync.sync_bugs_v2(conn, {})
+    assert not writes and not creates
+    assert sync._state['last_sync_ts_bugs']['bug'] == '2026-10-02 12:00:00'
+
+
+def test_pending_import_with_missing_source_does_not_create_remote_duplicate(bridge, monkeypatch):
+    conn, records, writes, creates = bridge
+    records.append({'record_id':'new','fields':{'Title':'New bug'}})
+    monkeypatch.setattr(sync, 'update_record', lambda *args: {'code':999})
+    sync.sync_bugs_v2(conn, {})
+    records.clear()
+    sync.sync_bugs_v2(conn, {})
+    assert not creates
+    assert conn.execute('SELECT count(*) FROM bugs WHERE deleted_at IS NULL').fetchone()[0] == 1
+
+
+def test_blank_rows_and_blank_status_cells_are_left_alone(bridge):
+    conn, records, writes, creates = bridge
+    record = existing(conn, status='hold')
+    record['fields']['Status'] = ''
+    records.extend([record, {'record_id':'blank','fields':{}}, {'record_id':'whitespace','fields':{'Title':'   '}}])
+    sync.sync_bugs_v2(conn, {})
+    assert conn.execute('SELECT count(*) FROM bugs').fetchone()[0] == 1
+    assert conn.execute('SELECT status FROM bugs').fetchone()[0] == 'hold'
+    assert not writes and not creates
+
+
+def test_unresolved_conflict_is_not_duplicated_or_overwritten_on_next_poll(bridge):
+    conn, records, writes, creates = bridge
+    record = existing(conn, title='Local edit', updated_at='2026-10-03 12:00:00')
+    record['fields'].update(Title='Remote edit', updated_at='2026-10-04 12:00:00')
+    records.append(record)
+    sync._state['last_sync_ts_bugs'] = {'bug':'2026-10-02 12:00:00'}
+    sync.sync_bugs_v2(conn, {})
+    sync.sync_bugs_v2(conn, {})
+    assert conn.execute("SELECT count(*) FROM sync_conflicts WHERE resolved=0").fetchone()[0] == 1
+    assert conn.execute('SELECT title FROM bugs').fetchone()[0] == 'Local edit'
+    assert sync._state['last_sync_ts_bugs']['bug'] == '2026-10-02 12:00:00'
+    assert not writes
+
+
+def test_resolved_local_choice_pushes_once_but_new_remote_edit_conflicts(bridge):
+    conn, records, writes, creates = bridge
+    record = existing(conn, title='Local edit', updated_at='2026-10-03 12:00:00')
+    record['fields'].update(Title='Remote edit', updated_at='2026-10-04 12:00:00')
+    records.append(record)
+    sync._state['last_sync_ts_bugs'] = {'bug':'2026-10-02 12:00:00'}
+    sync.sync_bugs_v2(conn, {})
+    conn.execute("UPDATE sync_conflicts SET resolved=1,resolution='local',resolved_at='2026-10-05 12:00:00'")
+    conn.execute("UPDATE bugs SET updated_at='2026-10-05 12:00:00'")
+    conn.commit()
+    sync.sync_bugs_v2(conn, {})
+    assert writes[-1][2]['Title'] == 'Local edit'
+    # A genuinely newer remote decision must not be covered by that old choice.
+    sync._state['last_sync_ts_bugs']['bug'] = '2026-10-02 12:00:00'
+    records[0]['fields'].update(Title='New remote edit', updated_at='2026-10-06 12:00:00')
+    writes.clear()
+    sync.sync_bugs_v2(conn, {})
+    assert conn.execute('SELECT count(*) FROM sync_conflicts WHERE resolved=0').fetchone()[0] == 1
+    assert not writes
+
+
+def test_confirmed_import_keeps_existing_remote_deletion_behavior(bridge):
+    conn, records, writes, creates = bridge
+    records.append({'record_id':'new','fields':{'Title':'New bug'}})
+    sync.sync_bugs_v2(conn, {})
+    assert conn.execute('SELECT linked FROM feishu_bug_imports').fetchone()[0] == 1
+    records.clear()
+    sync.sync_bugs_v2(conn, {})
+    assert conn.execute('SELECT deleted_at FROM bugs').fetchone()[0]
+    assert not creates
+
+
+def test_partial_human_resolution_remains_held_until_all_choices_are_made(bridge):
+    conn, records, writes, creates = bridge
+    record = existing(conn, title='Local title', fix_method='Local method', updated_at='2026-10-03 12:00:00')
+    record['fields'].update(Title='Remote title', 修复方法='Remote method', updated_at='2026-10-04 12:00:00')
+    records.append(record)
+    sync._state['last_sync_ts_bugs'] = {'bug':'2026-10-02 12:00:00'}
+    sync.sync_bugs_v2(conn, {})
+    conn.execute("UPDATE sync_conflicts SET resolved=1,resolution='local',resolved_at='2026-10-05 12:00:00' WHERE field_name='title'")
+    conn.execute("UPDATE bugs SET updated_at='2026-10-05 12:00:00'")
+    conn.commit()
+    sync.sync_bugs_v2(conn, {})
+    assert not writes
+    assert conn.execute('SELECT count(*) FROM sync_conflicts').fetchone()[0] == 2
+    conn.execute("UPDATE sync_conflicts SET resolved=1,resolution='remote',resolved_at='2026-10-05 13:00:00' WHERE field_name='fix_method'")
+    conn.execute("UPDATE bugs SET fix_method='Remote method',updated_at='2026-10-05 13:00:00'")
+    conn.commit()
+    sync.sync_bugs_v2(conn, {})
+    assert writes[-1][2]['Title'] == 'Local title'
+    assert writes[-1][2]['修复方法'] == 'Remote method'

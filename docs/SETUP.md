@@ -157,14 +157,23 @@ unchanged for retry. When Feishu's status matches the local projection, the
 more precise local status is retained (for example, `investigating` with
 `In Progress`, or `resolved` / `wontfix` with `Done`). A different supported
 Feishu status is pulled. Unsupported non-empty statuses are skipped rather
-than mapped to `open`; a blank status defaults to `open`. Historical missing
-fix metadata cannot be inferred from status alone.
+than mapped to `open`. Blank rows are skipped. On a valid bug row, a blank
+remote `STATUS` leaves the existing local status unchanged; other fields on
+that row continue to sync normally. An explicit local status edit can still
+be pushed to Feishu. Historical missing fix metadata cannot be inferred from
+status alone.
+Import retries reuse stable identifiers to avoid duplicate bugs. Unresolved
+bug conflicts hold that bug's sync changes until a human resolves the conflict
+in the kanban.
 
 已有映射的缺陷只有在飞书确认同步写入后才会在本地应用变更；确认被拒绝或缺失时，检查点
 保持不变以便重试。飞书状态与本地状态映射一致时，保留更精确的本地状态（例如
 `investigating` 对应 `In Progress`，以及 `resolved` / `wontfix` 对应 `Done`）。
 飞书状态明确变为其他受支持状态时会拉取更新。非空但不受支持的状态会跳过，不会
-静默映射为 `open`；空状态默认按 `open` 处理。仅凭状态无法推断历史缺失的修复元数据。
+静默映射为 `open`。空白飞书行会跳过；有效缺陷行中的远端 `STATUS` 为空时，保留本地现有
+状态。该有效行的其他字段仍正常同步；本地状态被明确修改时，仍可正常推送到飞书。仅凭
+状态无法推断历史缺失的修复元数据。导入重试会复用稳定标识，避免重复创建缺陷。未解决的
+缺陷冲突会暂停该缺陷的同步变更，直到人员在看板中完成冲突仲裁。
 
 Optional: bug auto-routing. If your Bitable has a "feature" / 功能 field
 that should auto-map to a kanban project, create

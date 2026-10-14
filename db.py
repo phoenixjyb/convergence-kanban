@@ -520,6 +520,16 @@ def init_db():
         )""")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_btl_bug ON bug_task_links(bug_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_btl_task ON bug_task_links(task_id)")
+        conn.execute("""CREATE TABLE IF NOT EXISTS feishu_bug_imports (
+            profile TEXT NOT NULL,
+            table_id TEXT NOT NULL,
+            record_id TEXT NOT NULL,
+            bug_id TEXT NOT NULL REFERENCES bugs(id) ON DELETE CASCADE,
+            imported_at TEXT NOT NULL,
+            linked INTEGER NOT NULL DEFAULT 0 CHECK(linked IN (0,1)),
+            PRIMARY KEY (profile, table_id, record_id),
+            UNIQUE (profile, table_id, bug_id)
+        )""")
         # Migrate existing bugs.task_id into bug_task_links
         conn.execute("""INSERT OR IGNORE INTO bug_task_links (bug_id, task_id)
             SELECT id, task_id FROM bugs
