@@ -79,6 +79,12 @@ The bug pipeline is:
 
 `open -> investigating -> fixing -> fix_complete -> to_verify -> resolved -> closed`
 
+`hold` is an off-flow pause, not a progression stage. It maps to Feishu
+`Hold`, remains unresolved, and must not be treated as fixed, resolved, or
+closed. Use it when work is intentionally paused; move the bug back to the
+appropriate active status when work resumes. `wontfix` remains a separate
+terminal decision.
+
 - `fix_complete` means the fix landed in an MR/commit and is ready for
   daily QA spot-check.
 - `to_verify` means the fix is included in a weekly/monthly release build and
@@ -99,6 +105,9 @@ agent work, and team planning connected.
 
 中文规则：
 
+- `hold`（飞书 `Hold`，界面显示“暂缓”）是主流程之外的暂停状态，仍属于未解决
+  缺陷，不能视为修复、已解决或已关闭。工作恢复时应将其改回合适的处理中状态；
+  `wontfix` 仍是独立的终止决定。
 - `fix_complete` 表示 MR/commit 级修复已经落地，适合 QA 日常抽查。
 - `to_verify` 表示修复已经进入周版/月版等验证构建，进入正式发布验证。
 - `resolved` 表示 QA 已验证通过。
@@ -107,6 +116,9 @@ agent work, and team planning connected.
   `fix_method`、`fix_version`、`fix_date`。否则 QA 不知道去哪一个版本、
   哪一个 MR 或哪一个构建里验证。
 - 缺陷应关联到承载修复的任务或 workstream，便于后续追溯。
+
+RD/Agent 缺陷的 Reporter 和 Assignee 是普通文本身份值，不是飞书 Person
+字段；QA 缺陷中的 Person 字段仍按人员字段处理。RD 文本值不会自动成为飞书人员关联。
 
 ## QA Ticket Workflow
 

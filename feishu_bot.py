@@ -374,7 +374,7 @@ def cmd_bugs() -> str:
         all_bugs = kanban_get("/bugs")
     except Exception as e:
         return f"Failed to fetch bugs: {e}"
-    bugs = [b for b in all_bugs if b.get("status") in ("open", "investigating", "fixing", "fix_complete", "to_verify")]
+    bugs = [b for b in all_bugs if b.get("status") in ("open", "hold", "investigating", "fixing", "fix_complete", "to_verify")]
     if not bugs:
         return "No open bugs! 🎉"
     by_sev = {"critical": [], "high": [], "medium": [], "low": []}

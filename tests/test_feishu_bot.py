@@ -46,6 +46,16 @@ def test_help_command(bot):
     assert "conflicts" in result
 
 
+def test_bugs_command_includes_hold_but_not_closed(bot):
+    with patch.object(bot, "kanban_get", return_value=[
+        {"status": "hold", "severity": "high", "title": "Paused defect"},
+        {"status": "closed", "severity": "high", "title": "Closed defect"},
+    ]):
+        result = bot.cmd_bugs()
+    assert "[hold] Paused defect" in result
+    assert "Closed defect" not in result
+
+
 def test_help_chinese(bot):
     result = bot.route_command("帮助", "test-human")
     assert "Kanban Bot Commands" in result

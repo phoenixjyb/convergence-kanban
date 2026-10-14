@@ -284,6 +284,13 @@ ticket 创建成功但打不开页面，通常是飞书父页面或空间分享�
 `open → investigating → fixing → fix_complete → to_verify → resolved → closed`
 (also `wontfix`).
 
+`hold` (Feishu `Hold`, displayed as **On Hold**) is an off-flow pause and
+still counts as unresolved. It does not mean fixed, resolved, or closed; when
+work resumes, move it to the appropriate active status. Hold alone does not
+require fix metadata. On `RD-` / agent bugs, Reporter and Assignee are
+plain-text identity values, not Feishu Person fields; QA Person fields remain
+person fields.
+
 - **`fix_complete`** — fix merged; spot-check via linked QA ticket. Use
   this for daily MR fixes.
 - **`to_verify`** — fix bundled into a weekly/monthly release; reserved
@@ -295,6 +302,10 @@ verification build.
 
 普通 MR 级修复由 Agent 停在 `fix_complete`。进入周版/月版等验证构建后，再由
 发布负责人或 QA 推进到 `to_verify`。
+`hold`（飞书 `Hold`，界面显示“暂缓”）是主流程之外的暂停状态，仍计为未解决，
+不表示已修复、已解决或已关闭；工作恢复后改回合适的处理中状态。仅暂缓无需填写
+修复元数据。`RD-` / Agent 缺陷的 Reporter 和 Assignee 是普通文本身份值，不是飞书
+Person 字段；QA 的 Person 字段仍是人员字段。
 
 ## Bug display IDs
 

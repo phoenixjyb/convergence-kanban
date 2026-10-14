@@ -130,7 +130,7 @@ class BugCreate(BaseModel):
     title: str = Field(min_length=1, max_length=500)
     description: str = Field(default="", max_length=5000)
     severity: Literal["critical", "high", "medium", "low"] = "medium"
-    status: Literal["open", "investigating", "fixing", "fix_complete", "to_verify", "resolved", "closed", "wontfix"] = "open"
+    status: Literal["open", "hold", "investigating", "fixing", "fix_complete", "to_verify", "resolved", "closed", "wontfix"] = "open"
     reporter: str = Field(default="", max_length=100)
     assignee: str = Field(default="", max_length=100)
     project_id: Optional[str] = None
@@ -155,7 +155,7 @@ class BugUpdate(BaseModel):
     title: Optional[str] = Field(default=None, min_length=1, max_length=500)
     description: Optional[str] = Field(default=None, max_length=5000)
     severity: Optional[Literal["critical", "high", "medium", "low"]] = None
-    status: Optional[Literal["open", "investigating", "fixing", "fix_complete", "to_verify", "resolved", "closed", "wontfix"]] = None
+    status: Optional[Literal["open", "hold", "investigating", "fixing", "fix_complete", "to_verify", "resolved", "closed", "wontfix"]] = None
     assignee: Optional[str] = Field(default=None, max_length=100)
     project_id: Optional[str] = None
     workstream_id: Optional[str] = None

@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added the bilingual `hold` / Feishu `Hold` bug status as an off-flow,
+  unresolved pause in bug filters, list labels, and a visually separate
+  pipeline column. Documented that RD Reporter/Assignee are plain-text
+  identities while QA Person fields remain person fields.
+
 ### Changed
 
 - Expanded agent and team workflow docs for Feishu QA tickets: agents use the

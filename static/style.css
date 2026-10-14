@@ -1570,6 +1570,7 @@ tr.dragging { opacity: 0.3; }
 .status-pill-fixing { background: var(--blue); }
 .status-pill-fix_complete { background: var(--cyan, #22d3ee); }
 .status-pill-to_verify { background: var(--yellow); }
+.status-pill-hold { background: var(--yellow); color: #1f2937; }
 .status-pill-resolved { background: var(--green); }
 .status-pill-closed { background: var(--text3); }
 .status-pill-wontfix { background: var(--text3); }

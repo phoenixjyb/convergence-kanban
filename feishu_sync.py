@@ -605,6 +605,13 @@ def _extract_person_field(field_value):
     return None, None
 
 
+def _extract_bug_people(fields, table_key):
+    if table_key == "rd_bugs_table":
+        return (_text(fields.get("Reporter", "")), None), (_text(fields.get("Assignee", "")), None)
+    return (_extract_person_field(fields.get("Reporter (人员 )")),
+            _extract_person_field(fields.get("Assignee (人员 )")))
+
+
 def _bug_attachments_to_json(field_value):
     """Normalize a Feishu Attachment field (问题图片) to a JSON-encoded string
     of {file_token, name, size, type} dicts. Returns '' when the field is empty.
@@ -1253,17 +1260,17 @@ def sync_bugs_v2(db, proj_record_map, table_key="bugs_table",
 
     # Kanban status → Feishu Status
     STATUS_TO_FEISHU = {
-        "open": "To Do", "investigating": "In Progress", "fixing": "In Progress",
+        "open": "To Do", "hold": "Hold", "investigating": "In Progress", "fixing": "In Progress",
         "fix_complete": "Fix Complete",
         "to_verify": "To Verify", "resolved": "Done", "closed": "Done", "wontfix": "Done",
     }
     FEISHU_TO_STATUS = {
-        "To Do": "open", "In Progress": "fixing",
+        "To Do": "open", "Hold": "hold", "In Progress": "fixing",
         "Fix Complete": "fix_complete",
         "To Verify": "to_verify", "Done": "closed",
     }
 
-    VALID_STATUSES = ("open", "investigating", "fixing", "fix_complete", "to_verify", "resolved", "closed", "wontfix")
+    VALID_STATUSES = ("open", "hold", "investigating", "fixing", "fix_complete", "to_verify", "resolved", "closed", "wontfix")
     VALID_SEVS = ("critical", "high", "medium", "low")
 
     def _is_legacy_display_id(remote_id, local_id):
@@ -1409,11 +1416,9 @@ def sync_bugs_v2(db, proj_record_map, table_key="bugs_table",
         # Person fields named "Reporter (人员 )" / "Assignee (人员 )"; rd-bugs-list
         # uses plain text fields named "Reporter" / "Assignee")
         if table_key == "rd_bugs_table":
-            # Text fields — just push the name string
-            if local["reporter"]:
-                ff["Reporter"] = local["reporter"]
-            if local["assignee"]:
-                ff["Assignee"] = local["assignee"]
+            # Include blanks so clearing a local owner propagates too.
+            ff["Reporter"] = local["reporter"]
+            ff["Assignee"] = local["assignee"]
         else:
             # Person fields — push open_id for Feishu @mention
             if local["reporter"]:
@@ -1459,8 +1464,7 @@ def sync_bugs_v2(db, proj_record_map, table_key="bugs_table",
 
             # ── Build comparison dicts ────────────────────────────
             # Extract person fields
-            rpt_name, rpt_oid = _extract_person_field(rf.get("Reporter (人员 )"))
-            asg_name, asg_oid = _extract_person_field(rf.get("Assignee (人员 )"))
+            (rpt_name, rpt_oid), (asg_name, asg_oid) = _extract_bug_people(rf, table_key)
             if rpt_name and rpt_oid:
                 _save_feishu_open_id(db, rpt_name, rpt_oid)
             if asg_name and asg_oid:
@@ -1474,10 +1478,10 @@ def sync_bugs_v2(db, proj_record_map, table_key="bugs_table",
             r_assignee = asg_name or ""
             # Normalize: empty Person field for users without feishu_open_id ≠ change.
             # Otherwise the comparison would always diff and force a destructive PULL.
-            if not r_reporter and local["reporter"]:
+            if table_key != "rd_bugs_table" and not r_reporter and local["reporter"]:
                 if local["reporter"].lstrip("@").lower() not in user_open_id_map:
                     r_reporter = local["reporter"]
-            if not r_assignee and local["assignee"]:
+            if table_key != "rd_bugs_table" and not r_assignee and local["assignee"]:
                 if local["assignee"].lstrip("@").lower() not in user_open_id_map:
                     r_assignee = local["assignee"]
             r_issue_time = ""
@@ -1598,7 +1602,7 @@ def sync_bugs_v2(db, proj_record_map, table_key="bugs_table",
             # Bug exists in kanban but not in Feishu.
             # Check if it was previously synced — if so, the user deleted it
             # on Feishu and we should soft-delete locally instead of recreating.
-            prev_synced = set(_state.get("synced_kids_bugs", []))
+            prev_synced = set(_state.get(_state_key_kids, []))
             if kid in prev_synced:
                 if remote_complete:
                     db.execute("UPDATE bugs SET deleted_at=? WHERE id=? AND deleted_at IS NULL",
@@ -1626,8 +1630,7 @@ def sync_bugs_v2(db, proj_record_map, table_key="bugs_table",
             _bug_severity = "medium"
 
         # Person fields
-        rpt_name, rpt_oid = _extract_person_field(f.get("Reporter (人员 )"))
-        asg_name, asg_oid = _extract_person_field(f.get("Assignee (人员 )"))
+        (rpt_name, rpt_oid), (asg_name, asg_oid) = _extract_bug_people(f, table_key)
         if rpt_name and rpt_oid:
             _save_feishu_open_id(db, rpt_name, rpt_oid)
         if asg_name and asg_oid:
@@ -2164,7 +2167,7 @@ REQUIRED_STATUS_OPTIONS = ["todo", "doing", "in_review", "done", "blocked", "aba
 # so QA sees an identical Status filter across both tables. The sync's
 # STATUS_TO_FEISHU mapping pushes Feishu-native names regardless.
 REQUIRED_BUG_STATUS_OPTIONS = [
-    "To Do", "In Progress", "Fix Complete", "To Verify", "Done",
+    "To Do", "Hold", "In Progress", "Fix Complete", "To Verify", "Done",
 ]
 
 

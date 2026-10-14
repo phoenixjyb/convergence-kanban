@@ -96,6 +96,9 @@ for that operation. Never execute the setup commands merely to review this guide
 
 `open → investigating → fixing → fix_complete → to_verify → resolved → closed` (also `wontfix`)
 
+- **`hold`** — Feishu `Hold` / UI `On Hold` (`暂缓`): an off-flow pause that remains unresolved, not fixed or closed. Return it to the appropriate active status when work resumes; no fix metadata is implied.
+- **RD identity fields** — Agent-bug `reporter` and `assignee` values are plain text, not Feishu Person fields. QA Person fields remain person fields.
+
 - **`fix_complete`** — fix committed/merged. The default move agents make after a daily MR-level fix; QA team monitors this bucket and spot-checks via the linked QA ticket.
 - **`to_verify`** — fix bundled into a weekly/monthly release; reserved for formal end-to-end release verification.
 
@@ -104,6 +107,9 @@ When moving a bug to `fix_complete`/`to_verify`/`resolved`, also populate the fi
 中文：MR/commit 级修复默认到 `fix_complete`；进入正式验证构建后才到
 `to_verify`。进入 `fix_complete` / `to_verify` / `resolved` 时必须同时填写
 `fix_method`、`fix_version`、`fix_date`。
+`hold`（飞书 `Hold`，界面显示“暂缓”）是主流程外的暂停，仍未解决，不代表已修复或
+已关闭；恢复工作时回到合适的处理中状态，暂缓本身不要求填写修复元数据。RD Agent
+缺陷的 Reporter / Assignee 是普通文本而非飞书 Person 字段；QA Person 字段仍为人员字段。
 
 ## Display IDs
 

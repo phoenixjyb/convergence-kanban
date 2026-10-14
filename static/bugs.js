@@ -2,9 +2,9 @@
 // Bug Tracker — Full client logic
 // ══════════════════════════════════════════════════════════════════════════
 
-const BUG_STATUSES = ['open', 'investigating', 'fixing', 'fix_complete', 'to_verify', 'resolved', 'closed', 'wontfix'];
+const BUG_STATUSES = ['open', 'investigating', 'fixing', 'fix_complete', 'to_verify', 'hold', 'resolved', 'closed', 'wontfix'];
 const BUG_SEVERITIES = ['critical', 'high', 'medium', 'low'];
-const PIPELINE_STATUSES = ['open', 'investigating', 'fixing', 'fix_complete', 'to_verify', 'resolved', 'closed'];
+const PIPELINE_STATUSES = ['open', 'investigating', 'fixing', 'fix_complete', 'to_verify', 'resolved', 'closed', 'hold'];
 
 let allBugs = [];
 let allProjects = [];

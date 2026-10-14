@@ -201,6 +201,15 @@ The API returns `{"id": "...", "display_id": "RD-YYMMDD-NNN"}`.
 
 **Bug status flow**: `open → investigating → fixing → fix_complete → to_verify → resolved → closed` (also: `wontfix`)
 
+`hold` (Feishu `Hold`, UI: **On Hold**) is a separate off-flow pause. It is
+still unresolved and is not a fix, `resolved`, or `closed`; use it when work
+is intentionally paused, then return the bug to the appropriate active status
+when work resumes. Do not add fix metadata merely for placing a bug on hold.
+
+For `RD-` / agent bugs, `reporter` and `assignee` are plain-text identity
+values, not Feishu Person fields. QA bugs' Person fields remain person fields;
+do not assume an RD text value creates a Feishu person association.
+
 #### `fix_complete` vs `to_verify`
 
 - **`fix_complete`** — agent committed/merged the fix; QA team monitors this bucket and runs day-to-day MR-level spot-check via the linked QA ticket. **Use this for daily MR fixes.**
@@ -216,6 +225,10 @@ human release owner says the fix is in a verification build.
 
 中文规则：日常 MR/commit 级修复默认进入 `fix_complete`，并填写修复信息和 QA
 ticket。`to_verify` 只表示修复已经进入正式验证构建，不是“代码已经提交”的同义词。
+`hold`（飞书 `Hold`，界面显示“暂缓”）是主流程外的暂停状态，仍未解决，不代表
+修复、`resolved` 或 `closed`。工作恢复时应回到合适的处理中状态；仅设置暂缓无需填写
+修复元数据。`RD-` / Agent 缺陷的 `reporter` 和 `assignee` 是普通文本身份值，不是
+飞书 Person 字段；QA 缺陷的 Person 字段仍是人员字段，RD 文本不会自动创建人员关联。
 
 ### When you fix a bug — populate fix metadata
 
