@@ -166,6 +166,27 @@ Import retries reuse stable identifiers to avoid duplicate bugs. Unresolved
 bug conflicts hold that bug's sync changes until a human resolves the conflict
 in the kanban.
 
+Task and blocker conflicts use validated field-level arbitration. A task's
+Feishu `title_en` value is stored in the Chinese title when it contains CJK
+characters and otherwise in the English title. Choosing an English display
+title clears a stale Chinese display override; Chinese edits retain the English
+column. Task dates must be blank or ISO dates, and a selected parent must
+be active in the same workstream without creating a cycle. Bots may resolve
+nonterminal task changes, but only humans may choose `done` or `abandoned`.
+Blocker `done` resolves the blocker and records `resolved_at`; `blocked`
+reopens it. Bug conflict `task_ids` values are JSON arrays of unique active
+task IDs and update both the bug-task links and the legacy primary task field;
+an empty array clears those links. Invalid or stale choices remain unresolved,
+and bulk resolution is atomic.
+
+Task/blocker sync retains acknowledged field snapshots as well as timestamps.
+Rejected writes and unresolved conflicts cannot advance their checkpoints;
+partial reads cannot clear data. Bug-task links have their own acknowledged
+baseline: initial disagreements are held for review, while confirmed empty link
+sets clear both the junction and legacy primary-task reference.
+Optional parent text fields are sent only when the destination table exposes
+them; native parent-record updates retain acknowledgement checks.
+
 已有映射的缺陷只有在飞书确认同步写入后才会在本地应用变更；确认被拒绝或缺失时，检查点
 保持不变以便重试。飞书状态与本地状态映射一致时，保留更精确的本地状态（例如
 `investigating` 对应 `In Progress`，以及 `resolved` / `wontfix` 对应 `Done`）。
@@ -174,6 +195,20 @@ in the kanban.
 状态。该有效行的其他字段仍正常同步；本地状态被明确修改时，仍可正常推送到飞书。仅凭
 状态无法推断历史缺失的修复元数据。导入重试会复用稳定标识，避免重复创建缺陷。未解决的
 缺陷冲突会暂停该缺陷的同步变更，直到人员在看板中完成冲突仲裁。
+
+任务和阻塞项冲突会按字段验证后再仲裁。任务的飞书 `title_en` 若包含中日韩文字则写入
+中文标题，否则写入英文标题。选择英文展示标题时会清除旧中文覆盖值；中文编辑保留英文
+列。任务日期必须为空或 ISO 日期；所选父任务
+必须处于同一工作流且有效，并且不能形成循环。Bot 可以仲裁非终态任务变更，但只有人员
+可以将任务设为 `done` 或 `abandoned`。阻塞项 `done` 会标记为已解决并记录 `resolved_at`；
+`blocked` 会重新打开阻塞项。缺陷冲突的 `task_ids` 必须是由不重复有效任务 ID 组成的
+JSON 数组，并同时更新缺陷任务关联表和旧版主任务字段；空数组会清除关联。无效或过期的
+选择保持未解决，批量仲裁采用原子事务。
+
+任务与阻塞项同步同时保存已确认的字段快照和时间戳；拒绝的写入与未解决冲突不会推进
+检查点，不完整读取不会清除数据。缺陷任务关联有独立基线，首次发现两端不一致时保留
+冲突等待审核；确认的空关联会同时清除关联表和旧版主任务引用。
+仅在目标表提供父任务文本字段时发送该字段；原生父记录更新同样需要写入确认。
 
 Optional: bug auto-routing. If your Bitable has a "feature" / 功能 field
 that should auto-map to a kanban project, create

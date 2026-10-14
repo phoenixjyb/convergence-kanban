@@ -333,3 +333,70 @@ def test_partial_human_resolution_remains_held_until_all_choices_are_made(bridge
     sync.sync_bugs_v2(conn, {})
     assert writes[-1][2]['Title'] == 'Local title'
     assert writes[-1][2]['修复方法'] == 'Remote method'
+
+
+def task_links(bridge, monkeypatch, baseline=True):
+    conn, records, writes, creates = bridge
+    conn.execute("INSERT INTO projects (id,name_en) VALUES ('p','P')")
+    conn.execute("INSERT INTO workstreams (id,project_id,title_en) VALUES ('w','p','W')")
+    conn.execute("INSERT INTO tasks (id,workstream_id,title_en) VALUES ('t','w','Task')")
+    conn.commit()
+    record = existing(conn, task_id='t')
+    conn.execute("INSERT INTO bug_task_links (bug_id,task_id) VALUES ('bug','t')")
+    conn.commit()
+    record['fields']['Related Task'] = ['rt']
+    records.append(record)
+    sync._state['tasks_table'] = 'tasks'
+    sync._state['last_sync_ts_bugs'] = {'bug':'2026-10-02 12:00:00'}
+    if baseline:
+        sync._state['bug_task_links_baselines'] = {'bug':['t']}
+    monkeypatch.setattr(sync, 'list_records', lambda table: (
+        ([{'record_id':'rt','fields':{'kanban_id':'t'}}] if table=='tasks' else copy.deepcopy(records)), True))
+    return record
+
+
+def test_local_unlink_pushes_explicit_empty_feishu_links(bridge, monkeypatch):
+    conn, records, writes, creates = bridge
+    task_links(bridge, monkeypatch)
+    conn.execute("DELETE FROM bug_task_links WHERE bug_id='bug'")
+    conn.execute("UPDATE bugs SET task_id=NULL,updated_at='2026-10-03 12:00:00'")
+    conn.commit()
+    sync.sync_bugs_v2(conn, {})
+    assert writes[-1][2]['Related Task'] == []
+    assert sync._state['bug_task_links_baselines']['bug'] == []
+
+
+def test_remote_unlink_clears_junction_and_legacy_and_stays_cleared(bridge, monkeypatch):
+    conn, records, writes, creates = bridge
+    record = task_links(bridge, monkeypatch)
+    record['fields']['Related Task'] = []
+    sync.sync_bugs_v2(conn, {})
+    assert not conn.execute('SELECT * FROM bug_task_links').fetchall()
+    assert conn.execute('SELECT task_id FROM bugs').fetchone()[0] is None
+    writes.clear()
+    sync.sync_bugs_v2(conn, {})
+    assert not writes
+
+
+def test_unmapped_or_partial_task_mapping_cannot_clear_links(bridge, monkeypatch):
+    conn, records, writes, creates = bridge
+    record = task_links(bridge, monkeypatch)
+    record['fields']['Related Task'] = ['unmapped']
+    sync.sync_bugs_v2(conn, {})
+    assert conn.execute('SELECT count(*) FROM bug_task_links').fetchone()[0] == 1
+    assert not writes
+    monkeypatch.setattr(sync, 'list_records', lambda table: ([], False))
+    sync.sync_bugs_v2(conn, {})
+    assert conn.execute('SELECT count(*) FROM bug_task_links').fetchone()[0] == 1
+    assert sync._state['last_sync_ts_bugs']['bug'] == '2026-10-02 12:00:00'
+
+
+def test_first_link_disagreement_is_held_for_human_choice(bridge, monkeypatch):
+    conn, records, writes, creates = bridge
+    record = task_links(bridge, monkeypatch, baseline=False)
+    record['fields']['Related Task'] = []
+    sync.sync_bugs_v2(conn, {})
+    sync.sync_bugs_v2(conn, {})
+    assert conn.execute('SELECT count(*) FROM bug_task_links').fetchone()[0] == 1
+    assert conn.execute("SELECT count(*) FROM sync_conflicts WHERE field_name='task_ids' AND resolved=0").fetchone()[0] == 1
+    assert not writes

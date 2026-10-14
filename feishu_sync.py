@@ -61,6 +61,30 @@ SYNC_INTERVAL = int(os.environ.get("SYNC_INTERVAL", "30"))
 STATE_FILE = DATA_DIR / f"feishu_sync_state_{_profile}.json" if _profile != "default" else DATA_DIR / "feishu_sync_state.json"
 
 _state = {}
+_field_names_cache = {}
+
+
+def _table_field_names(table_id):
+    cached = _field_names_cache.get(table_id)
+    if cached and time.time() - cached[0] < 300:
+        return cached[1]
+    names, page = set(), ""
+    while True:
+        path = f"/bitable/v1/apps/{bt()}/tables/{table_id}/fields?page_size=100"
+        if page:
+            path += f"&page_token={page}"
+        response = feishu_api(path)
+        if response.get('code') != 0:
+            return None
+        data = response.get('data', {})
+        names.update(field['field_name'] for field in data.get('items', []))
+        if not data.get('has_more'):
+            break
+        page = data.get('page_token')
+        if not page:
+            return None
+    _field_names_cache[table_id] = (time.time(), names)
+    return names
 
 # ── HTTP helpers (bypass proxy) ───────────────────────────────────────────
 _opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -264,9 +288,13 @@ def update_record(table_id, record_id, fields):
 
 
 def _update_bug_record(table_id, record_id, fields):
+    return _update_synced_record(table_id, record_id, fields, "bugs")
+
+
+def _update_synced_record(table_id, record_id, fields, label="tasks"):
     response = update_record(table_id, record_id, fields)
     if not isinstance(response, dict) or response.get("code") != 0:
-        print("  [sync-bugs] update not acknowledged; retaining checkpoint for retry", flush=True)
+        print(f"  [sync-{label}] update not acknowledged; retaining checkpoint for retry", flush=True)
         return False
     return True
 
@@ -701,9 +729,12 @@ def _native_parent_field_name(fields):
 def sync_tasks_v2(db, proj_record_map, member_record_map=None):
     """Two-way sync all tasks+blockers to the centralized Tasks table."""
     tasks_tid = _state["tasks_table"]
+    table_fields = _table_field_names(tasks_tid)
+    supports_text_parent = table_fields is not None and 'Parent Task ID' in table_fields
 
     # Load last-sync timestamps for conflict detection
     last_sync_ts = _state.get("last_sync_ts_tasks", {})
+    value_baselines = _state.setdefault("last_sync_values_tasks", {})
 
     # Build user open_id map for Person field
     user_open_id_map = _build_user_open_id_map(db)
@@ -766,6 +797,9 @@ def sync_tasks_v2(db, proj_record_map, member_record_map=None):
 
     # Get remote records
     remote_records, remote_complete = list_records(tasks_tid)
+    if not remote_complete:
+        print("  [sync-tasks] incomplete remote read; skipping cycle", flush=True)
+        return
     if remote_complete:
         remote_records = _dedupe_remote_records(remote_records, tasks_tid, label="tasks")
     remote_by_kid = {}
@@ -780,7 +814,9 @@ def sync_tasks_v2(db, proj_record_map, member_record_map=None):
     pushed, pulled, created_remote, created_local, deleted_remote = 0, 0, 0, 0, 0
 
     # Push local -> Feishu
+    blocked_ids = set()
     for kid, local in local_items.items():
+        blocked_ids.add(kid)
         ff = {
             "Title": local["title"], "Workstream": local["workstream"],
             "Type": local["type"], "Status": local["status"],
@@ -790,11 +826,15 @@ def sync_tasks_v2(db, proj_record_map, member_record_map=None):
         }
         # Date fields: convert to epoch ms for Feishu DateTime fields
         sd_ms = _date_to_ms(local["start_date"])
-        if sd_ms:
+        if table_fields is None or 'Start Date' in table_fields:
             ff["Start Date"] = sd_ms
+        elif sd_ms is not None:
+            continue
         dd_ms = _date_to_ms(local["due_date"])
-        if dd_ms:
+        if table_fields is None or 'Due Date' in table_fields:
             ff["Due Date"] = dd_ms
+        elif dd_ms is not None:
+            continue
         # DuplexLink to project
         proj_rid = proj_record_map.get(local["project_id"])
         if proj_rid:
@@ -813,8 +853,8 @@ def sync_tasks_v2(db, proj_record_map, member_record_map=None):
                 print(f"[sync] WARNING: assignee '{local['assignee']}' has no feishu_open_id — "
                       f"task '{local['title'][:40]}' will have no executor on Bitable")
         # Parent task ID for subtask hierarchy
-        if local.get("parent_task_id"):
-            ff["Parent Task ID"] = local["parent_task_id"]
+        if local["type"] != "Blocker" and supports_text_parent:
+            ff["Parent Task ID"] = local.get("parent_task_id") or ""
 
         if kid in remote_by_kid:
             remote = remote_by_kid[kid]
@@ -832,7 +872,7 @@ def sync_tasks_v2(db, proj_record_map, member_record_map=None):
                 if local["assignee"].lstrip("@").lower() not in user_open_id_map:
                     remote_assignee = local["assignee"]
             if local["type"] == "Blocker":
-                r_status = _text(rf.get("Status", ""))
+                r_status = _text(rf.get("Status", "")) or local["status"]
                 remote_vals = {
                     "title_en": _text(rf.get("Title", "")),
                     "status": "done" if r_status == "done" else "blocked",
@@ -849,7 +889,7 @@ def sync_tasks_v2(db, proj_record_map, member_record_map=None):
             else:
                 remote_vals = {
                     "title_en": _text(rf.get("Title", "")),
-                    "status": _text(rf.get("Status", "")) or "todo",
+                    "status": _text(rf.get("Status", "")) or local["status"],
                     "assignee": remote_assignee,
                     "start_date": _ms_to_date(rf.get("Start Date")),
                     "due_date": _ms_to_date(rf.get("Due Date")),
@@ -865,21 +905,37 @@ def sync_tasks_v2(db, proj_record_map, member_record_map=None):
                 }
                 etype = "task"
 
+            if local["type"] != "Blocker" and "Parent Task ID" in rf:
+                remote_vals["parent_task_id"] = _text(rf.get("Parent Task ID"))
+                local_vals["parent_task_id"] = local["parent_task_id"]
+
             local_changed = local["updated_at"] > last_sync if last_sync else False
             remote_changed = remote_ts > last_sync if last_sync else False
+            if kid in value_baselines:
+                local_changed = local_vals != value_baselines[kid]
+                remote_changed = remote_vals != value_baselines[kid]
+            acknowledged_values = local_vals
+
+            if db.execute("SELECT 1 FROM sync_conflicts WHERE entity_type=? AND entity_id=? AND resolved=0 LIMIT 1", (etype, kid)).fetchone():
+                _record_entity_conflicts(db, etype, kid, local_vals, remote_vals, local["updated_at"], remote_ts, pending_only=True)
+                continue
+            if _choices_still_valid(db, etype, kid, local_vals, remote_vals, last_sync, remote_ts):
+                local_changed, remote_changed = True, False
 
             if remote_vals == local_vals:
                 pass  # In sync — nothing to do
             elif local_changed and remote_changed:
                 # Both sides changed since last sync — record conflicts
-                _record_conflicts(db, etype, kid, local_vals, remote_vals,
+                _record_entity_conflicts(db, etype, kid, local_vals, remote_vals,
                                   local["updated_at"], remote_ts)
                 print(f"  [sync-tasks] CONFLICT {kid} '{local['title'][:30]}' local_s={local_vals.get('status')} remote_s={remote_vals.get('status')}", flush=True)
+                continue
             elif local_changed:
                 # Only local changed — push to Feishu
                 ts = now_iso()
                 ff["updated_at"] = ts
-                update_record(tasks_tid, remote["record_id"], ff)
+                if not _update_synced_record(tasks_tid, remote["record_id"], ff):
+                    continue
                 pushed += 1
                 print(f"  [sync-tasks] PUSH {kid} '{local['title'][:30]}' status={local_vals.get('status')} (local_ts={local['updated_at']} remote_ts={remote_ts} last_sync={last_sync})", flush=True)
             else:
@@ -887,13 +943,21 @@ def sync_tasks_v2(db, proj_record_map, member_record_map=None):
                 # Note: text 'updated_at' field is sync-managed, so manual Feishu UI
                 # edits (e.g. dropdown Status changes) don't bump it. Trust the
                 # observed value difference and pull from Feishu.
-                _apply_remote_v2(db, kid, local, rf)
-                update_record(tasks_tid, remote["record_id"], {"updated_at": now_iso()})
+                prepared = _prepare_remote_v2(db, kid, local, rf)
+                if prepared is None:
+                    continue
+                if not _update_synced_record(tasks_tid, remote["record_id"], {"updated_at": now_iso()}):
+                    continue
+                if not _apply_remote_v2(db, kid, local, rf, prepared):
+                    continue
+                acknowledged_values = remote_vals
                 pulled += 1
                 print(f"  [sync-tasks] PULL {kid} '{local['title'][:30]}' local_s={local_vals.get('status')} remote_s={remote_vals.get('status')} (remote_changed={remote_changed} remote_ts={remote_ts} last_sync={last_sync})", flush=True)
 
             # Track last sync timestamp for this entity
             last_sync_ts[kid] = now_iso()
+            value_baselines[kid] = acknowledged_values
+            blocked_ids.discard(kid)
         else:
             # Not found in remote — could be Feishu deletion or incomplete read
             prev_synced = set(_state.get("synced_kids_tasks", []))
@@ -909,6 +973,7 @@ def sync_tasks_v2(db, proj_record_map, member_record_map=None):
             else:
                 new_rid = create_record(tasks_tid, ff)
                 if new_rid:
+                    blocked_ids.discard(kid)
                     created_remote += 1
                     remote_by_kid[kid] = {"record_id": new_rid, "fields": ff}
 
@@ -1016,12 +1081,17 @@ def sync_tasks_v2(db, proj_record_map, member_record_map=None):
     pushed_parents = _state.get("pushed_parents_central", {})
     parents_changed = False
     for kid, local in local_items.items():
-        parent_kid = local.get("parent_task_id")
-        if not parent_kid or local["type"] == "Blocker":
+        if kid in blocked_ids or local["type"] == "Blocker":
+            continue
+        current = db.execute("SELECT parent_task_id FROM tasks WHERE id=? AND deleted_at IS NULL", (kid,)).fetchone()
+        if not current:
+            continue
+        parent_kid = current["parent_task_id"] or ""
+        if not parent_kid and kid not in pushed_parents:
             continue
         child_rid = kid_to_rid.get(kid)
         parent_rid = kid_to_rid.get(parent_kid)
-        if not child_rid or not parent_rid:
+        if not child_rid or (parent_kid and not parent_rid):
             continue
         # Check if already pushed this exact parent (Feishu doesn't return 父记录 in list_records)
         if pushed_parents.get(kid) == parent_kid:
@@ -1036,8 +1106,11 @@ def sync_tasks_v2(db, proj_record_map, member_record_map=None):
                 continue
         try:
             rf = remote_by_kid.get(kid, {}).get("fields", {})
-            update_record(tasks_tid, child_rid,
-                          {_native_parent_field_name(rf): {"record_ids": [parent_rid]}})
+            native_field = ('Parent items' if table_fields and 'Parent items' in table_fields
+                            else _native_parent_field_name(rf))
+            if not _update_synced_record(tasks_tid, child_rid,
+                          {native_field: {"record_ids": [parent_rid] if parent_rid else []}}):
+                continue
             pushed_parents[kid] = parent_kid
             parents_changed = True
             print(f"  [parent] central: set {kid} -> {parent_kid}", flush=True)
@@ -1115,43 +1188,77 @@ def _resolve_workstream(db, fields, ws_name, ws_name_to_id, proj_record_map):
     return None
 
 
-def _apply_remote_v2(db, kid, local, remote_fields):
-    """Apply a Feishu edit back to local DB (v2 with start_date)."""
+def _prepare_remote_v2(db, kid, local, remote_fields):
+    from models import BlockerUpdate, TaskUpdate
+    from pydantic import ValidationError
+
+    table = "blockers" if local["type"] == "Blocker" else "tasks"
+    row = db.execute(f"SELECT * FROM {table} WHERE id=? AND deleted_at IS NULL", (kid,)).fetchone()
+    if not row:
+        return None
     title = _text(remote_fields.get("Title", ""))
-    status = _text(remote_fields.get("Status", ""))
-    # Executor (Feishu) person field is the single source of truth
+    if not title.strip():
+        return None
+    status = _text(remote_fields.get("Status", "")) or local["status"]
+    person_name, _ = _extract_person_field(remote_fields.get("Executor (Feishu)"))
+    assignee = person_name or ""
+    if not assignee and local["assignee"] and local["assignee"].lstrip("@").lower() not in _build_user_open_id_map(db):
+        assignee = local["assignee"]
+    new_en, new_zh = _split_bilingual(title)
+    changes = {"assignee": assignee, "notes": _text(remote_fields.get("Notes", ""))}
+    try:
+        if table == "blockers":
+            if status not in ("done", "blocked"):
+                return None
+            changes.update(description_en=new_en or row["description_en"] or title,
+                           description_zh=new_zh)
+            BlockerUpdate.model_validate(changes)
+            changes.update(resolved=int(status == "done"), resolved_at=now_iso() if status == "done" else None)
+        else:
+            changes.update(title_en=new_en or row["title_en"] or title,
+                           title_zh=new_zh, status=status,
+                           start_date=_ms_to_date(remote_fields.get("Start Date")) or None,
+                           due_date=_ms_to_date(remote_fields.get("Due Date")) or None)
+            if "Parent Task ID" in remote_fields:
+                parent = _text(remote_fields.get("Parent Task ID")) or None
+                if parent:
+                    seen = {kid}
+                    cursor = parent
+                    while cursor:
+                        if cursor in seen:
+                            return None
+                        seen.add(cursor)
+                        parent_row = db.execute("SELECT workstream_id,parent_task_id FROM tasks WHERE id=? AND deleted_at IS NULL", (cursor,)).fetchone()
+                        if not parent_row or parent_row["workstream_id"] != row["workstream_id"]:
+                            return None
+                        cursor = parent_row["parent_task_id"]
+                changes["parent_task_id"] = parent
+            for field in ("start_date", "due_date"):
+                if changes[field]:
+                    datetime.strptime(changes[field], "%Y-%m-%d")
+            TaskUpdate.model_validate(changes)
+    except (ValidationError, ValueError, TypeError):
+        return None
+    return changes, {key: row[key] for key in changes} | {"updated_at": row["updated_at"]}
+
+
+def _apply_remote_v2(db, kid, local, remote_fields, prepared=None):
+    prepared = prepared if prepared is not None else _prepare_remote_v2(db, kid, local, remote_fields)
+    if prepared is None:
+        return False
+    changes, expected = prepared
+    table = "blockers" if local["type"] == "Blocker" else "tasks"
+    changes = changes | {"updated_at": now_iso()}
+    guard = ' AND '.join(k+' IS ?' for k in expected)
+    cur = db.execute(f"UPDATE {table} SET {','.join(k+'=?' for k in changes)} WHERE id=? AND deleted_at IS NULL AND {guard}",
+                     [*changes.values(), kid, *expected.values()])
+    if not cur.rowcount:
+        return False
+    db.commit()
     person_name, person_oid = _extract_person_field(remote_fields.get("Executor (Feishu)"))
-    assignee = ""
     if person_name and person_oid:
         _save_feishu_open_id(db, person_name, person_oid)
-        assignee = person_name
-    new_en, new_zh = _split_bilingual(title)
-    if local["type"] == "Blocker":
-        resolved = 1 if status == "done" else 0
-        # Preserve existing language column when remote changes to the other language
-        desc_en = new_en or local.get("description_en") or title
-        desc_zh = new_zh or local.get("description_zh") or ""
-        notes = _text(remote_fields.get("Notes", ""))
-        db.execute(
-            "UPDATE blockers SET description_en=?, description_zh=?, assignee=?, notes=?, "
-            "resolved=?, resolved_at=?, updated_at=? WHERE id=?",
-            (desc_en, desc_zh, assignee, notes, resolved,
-             now_iso() if resolved else None, now_iso(), kid)
-        )
-    else:
-        # Preserve existing language column when remote changes to the other language
-        # e.g. user replaces English with Chinese → update title_zh, keep existing title_en
-        title_en = new_en or local.get("title_en") or title
-        title_zh = new_zh or local.get("title_zh") or ""
-        remote_parent = _text(remote_fields.get("Parent Task ID", ""))
-        parent_id = remote_parent or local.get("parent_task_id") or None
-        db.execute(
-            "UPDATE tasks SET title_en=?, title_zh=?, assignee=?, status=?, start_date=?, due_date=?, notes=?, parent_task_id=?, updated_at=? WHERE id=?",
-            (title_en, title_zh, assignee, status or "todo",
-             _ms_to_date(remote_fields.get("Start Date")) or None,
-             _ms_to_date(remote_fields.get("Due Date")) or None,
-             _text(remote_fields.get("Notes", "")), parent_id, now_iso(), kid))
-    db.commit()
+    return True
 
 
 def _record_conflicts(db, entity_type, entity_id, local_vals, remote_vals, local_ts, remote_ts):
@@ -1175,34 +1282,42 @@ def _record_conflicts(db, entity_type, entity_id, local_vals, remote_vals, local
     return count
 
 
-def _record_bug_conflicts(db, kid, local_vals, remote_vals, local_ts, remote_ts, pending_only=False):
+def _record_entity_conflicts(db, entity_type, kid, local_vals, remote_vals, local_ts, remote_ts, pending_only=False):
     for field, value in local_vals.items():
         lv, rv = str(value or ""), str(remote_vals.get(field) or "")
         existing = db.execute(
-            "SELECT id FROM sync_conflicts WHERE entity_type='bug' AND entity_id=? AND field_name=? AND resolved=0",
-            (kid, field)).fetchone()
+            "SELECT id FROM sync_conflicts WHERE entity_type=? AND entity_id=? AND field_name=? AND resolved=0",
+            (entity_type, kid, field)).fetchone()
         if existing:
             db.execute("UPDATE sync_conflicts SET local_value=?,remote_value=?,local_updated=?,remote_updated=? WHERE id=?",
                        (lv, rv, local_ts, remote_ts, existing["id"]))
         elif lv != rv and not pending_only:
             db.execute("INSERT INTO sync_conflicts (id,entity_type,entity_id,field_name,local_value,remote_value,local_updated,remote_updated) "
-                       "VALUES (?,'bug',?,?,?,?,?,?)", (uuid.uuid4().hex, kid, field, lv, rv, local_ts, remote_ts))
+                       "VALUES (?,?,?,?,?,?,?,?)", (uuid.uuid4().hex, entity_type, kid, field, lv, rv, local_ts, remote_ts))
     db.commit()
 
 
-def _bug_choices_still_valid(db, kid, local_vals, remote_vals, last_sync, remote_ts):
+def _choices_still_valid(db, entity_type, kid, local_vals, remote_vals, last_sync, remote_ts):
     """Resolved choices authorize a push only while their remote snapshots match."""
     differing = [key for key in local_vals if local_vals[key] != remote_vals[key]]
     if not differing:
         return False
     for field in differing:
         choice = db.execute(
-            "SELECT remote_value,resolved_at FROM sync_conflicts WHERE entity_type='bug' AND entity_id=? "
-            "AND field_name=? AND resolved=1 ORDER BY resolved_at DESC,rowid DESC LIMIT 1", (kid, field)).fetchone()
+            "SELECT remote_value,resolved_at FROM sync_conflicts WHERE entity_type=? AND entity_id=? "
+            "AND field_name=? AND resolved=1 ORDER BY resolved_at DESC,rowid DESC LIMIT 1", (entity_type, kid, field)).fetchone()
         if (not choice or choice["resolved_at"] <= last_sync or remote_ts > choice["resolved_at"]
                 or choice["remote_value"] != str(remote_vals[field] or "")):
             return False
     return True
+
+
+def _record_bug_conflicts(db, kid, local_vals, remote_vals, local_ts, remote_ts, pending_only=False):
+    _record_entity_conflicts(db, "bug", kid, local_vals, remote_vals, local_ts, remote_ts, pending_only)
+
+
+def _bug_choices_still_valid(db, kid, local_vals, remote_vals, last_sync, remote_ts):
+    return _choices_still_valid(db, "bug", kid, local_vals, remote_vals, last_sync, remote_ts)
 
 
 def sync_members_v2(db):
@@ -1290,6 +1405,7 @@ def sync_bugs_v2(db, proj_record_map, table_key="bugs_table",
     _state_key_ts = f"last_sync_ts_bugs{state_suffix}"
     _state_key_kids = f"synced_kids_bugs{state_suffix}"
     last_sync_ts_bugs = _state.get(_state_key_ts, {})
+    link_baselines = _state.setdefault(f"bug_task_links_baselines{state_suffix}", {})
 
     # ── Mapping dicts ────────────────────────────────────────────────────
     # Kanban severity → Feishu 优先级
@@ -1388,7 +1504,10 @@ def sync_bugs_v2(db, proj_record_map, table_key="bugs_table",
     task_record_map = {}
     task_rid_to_kid = {}
     if tasks_tid:
-        _task_recs, _ = list_records(tasks_tid)
+        _task_recs, tasks_complete = list_records(tasks_tid)
+        if not tasks_complete:
+            print("  [sync-bugs] incomplete task mapping; skipping cycle", flush=True)
+            return
         for rec in _task_recs:
             kid = _text(rec.get("fields", {}).get("kanban_id", ""))
             if kid:
@@ -1487,7 +1606,14 @@ def sync_bugs_v2(db, proj_record_map, table_key="bugs_table",
                        if tid in task_record_map]
         if not linked_rids and local.get("task_id") and local["task_id"] in task_record_map:
             linked_rids = [task_record_map[local["task_id"]]]
-        if linked_rids:
+        if tasks_tid:
+            expected_tasks = set(local["task_ids"])
+            if local.get("task_id"):
+                expected_tasks.add(local["task_id"])
+            if any(tid not in task_record_map for tid in expected_tasks):
+                print("  [sync-bugs] unmapped local task links; preserving record", flush=True)
+                continue
+            linked_rids = [task_record_map[tid] for tid in sorted(expected_tasks)]
             ff["Related Task"] = linked_rids
 
         if kid in remote_by_kid:
@@ -1495,6 +1621,16 @@ def sync_bugs_v2(db, proj_record_map, table_key="bugs_table",
             rf = remote.get("fields", {})
             remote_ts = _text(rf.get("updated_at", ""))
             remote_display_id = _text(rf.get("Bug ID", ""))
+            local_task_ids = sorted(expected_tasks) if tasks_tid else []
+            remote_task_ids = []
+            if tasks_tid:
+                remote_task_rids = _extract_duplex_link_rids(rf.get("Related Task"))
+                if any(rid not in task_rid_to_kid for rid in remote_task_rids):
+                    print("  [sync-bugs] unmapped remote task links; preserving record", flush=True)
+                    continue
+                remote_task_ids = sorted(set(task_rid_to_kid[rid] for rid in remote_task_rids))
+                if any(not db.execute("SELECT 1 FROM tasks WHERE id=? AND deleted_at IS NULL", (tid,)).fetchone() for tid in remote_task_ids):
+                    continue
             remote_status = _text(rf.get("Status", ""))
             if remote_status and remote_status not in FEISHU_TO_STATUS:
                 print("  [sync-bugs] unsupported remote status; preserving record", flush=True)
@@ -1613,6 +1749,10 @@ def sync_bugs_v2(db, proj_record_map, table_key="bugs_table",
                 "fix_version": _get_col(local, "fix_version"),
                 "fix_date": _get_col(local, "fix_date"),
             }
+            if tasks_tid:
+                remote_vals["task_ids"] = json.dumps(remote_task_ids)
+                local_vals["task_ids"] = json.dumps(local_task_ids)
+            synced_task_ids = local_task_ids
 
             # ── Sync decision (last_sync_ts aware) ───────────────
             last_sync = last_sync_ts_bugs.get(kid, "")
@@ -1623,7 +1763,17 @@ def sync_bugs_v2(db, proj_record_map, table_key="bugs_table",
             if pending:
                 _record_bug_conflicts(db, kid, local_vals, remote_vals, local["updated_at"], remote_ts, pending_only=True)
                 continue
-            if _bug_choices_still_valid(db, kid, local_vals, remote_vals, last_sync, remote_ts):
+            choices_valid = _bug_choices_still_valid(db, kid, local_vals, remote_vals, last_sync, remote_ts)
+            if tasks_tid and local_task_ids != remote_task_ids and not choices_valid:
+                base = link_baselines.get(kid)
+                if base is None or (local_task_ids != base and remote_task_ids != base):
+                    _record_bug_conflicts(db, kid, local_vals, remote_vals, local["updated_at"], remote_ts)
+                    continue
+                if local_task_ids != base:
+                    local_changed = True
+                if remote_task_ids != base:
+                    remote_changed = True
+            if choices_valid:
                 local_changed, remote_changed = True, False
 
             if remote_vals == local_vals:
@@ -1670,15 +1820,16 @@ def sync_bugs_v2(db, proj_record_map, table_key="bugs_table",
                      r_project_id, ts, kid)
                 )
                 # Sync Task DuplexLink → bug_task_links
-                remote_task_rids = _extract_duplex_link_rids(rf.get("Related Task"))
-                remote_task_kids = [task_rid_to_kid[rid] for rid in remote_task_rids
-                                    if rid in task_rid_to_kid]
-                if remote_task_kids:
-                    _sync_bug_task_links(db, kid, remote_task_kids)
+                if tasks_tid:
+                    _sync_bug_task_links(db, kid, remote_task_ids)
+                    db.execute("UPDATE bugs SET task_id=? WHERE id=?", (remote_task_ids[0] if remote_task_ids else None, kid))
+                    synced_task_ids = remote_task_ids
                 pulled += 1
                 print(f"  [sync-bugs] PULL {kid} local_s={local_vals.get('status')} remote_s={remote_vals.get('status')} (remote_ts={remote_ts} last_sync={last_sync})", flush=True)
 
             last_sync_ts_bugs[kid] = now_iso()
+            if tasks_tid:
+                link_baselines[kid] = synced_task_ids
         else:
             if kid in pending_import_ids:
                 # Never create a second remote row while an import's source
@@ -1793,6 +1944,8 @@ def sync_bugs_v2(db, proj_record_map, table_key="bugs_table",
                        (_profile, bugs_tid, rec["record_id"]))
             last_sync_ts_bugs[kid] = imported_at
             remote_by_kid[kid] = rec
+            if tasks_tid:
+                link_baselines[kid] = sorted(remote_task_kids)
         created_local += 1
 
     # Clean up soft-deletes — only push deletions to Feishu with complete read
@@ -1822,6 +1975,9 @@ def sync_project_items(db, project_id, feishu_table_id):
     # Load last-sync timestamps for conflict detection
     ls_key = f"last_sync_ts_{project_id}"
     last_sync_ts = _state.get(ls_key, {})
+    value_baselines = _state.setdefault(f"last_sync_values_{project_id}", {})
+    table_fields = _table_field_names(feishu_table_id)
+    supports_text_parent = table_fields is not None and 'Parent Task ID' in table_fields
 
     user_open_id_map = _build_user_open_id_map(db)
     ws_rows = db.execute(
@@ -1870,6 +2026,9 @@ def sync_project_items(db, project_id, feishu_table_id):
         }
 
     remote_records, remote_complete = list_records(feishu_table_id)
+    if not remote_complete:
+        print("  [sync-project] incomplete remote read; skipping cycle", flush=True)
+        return
     if remote_complete:
         remote_records = _dedupe_remote_records(remote_records, feishu_table_id, label=f"proj:{project_id[:8]}")
     remote_by_kid = {}
@@ -1885,7 +2044,9 @@ def sync_project_items(db, project_id, feishu_table_id):
 
     pushed, pulled, created_remote, created_local, deleted_remote = 0, 0, 0, 0, 0
 
+    blocked_ids = set()
     for kid, local in local_items.items():
+        blocked_ids.add(kid)
         ff = {
             "Title": local["title"], "Workstream": local["workstream"],
             "Type": local["type"], "Status": local["status"],
@@ -1894,11 +2055,17 @@ def sync_project_items(db, project_id, feishu_table_id):
             "kanban_id": kid, "updated_at": local["updated_at"],
         }
         sd_ms = _date_to_ms(local["start_date"])
-        if sd_ms:
+        if table_fields is None or 'Start Date' in table_fields:
             ff["Start Date"] = sd_ms
+        elif sd_ms is not None:
+            continue
         dd_ms = _date_to_ms(local["due_date"])
-        if dd_ms:
+        if table_fields is None or 'Due Date' in table_fields:
             ff["Due Date"] = dd_ms
+        elif dd_ms is not None:
+            continue
+        if local["type"] != "Blocker" and supports_text_parent:
+            ff["Parent Task ID"] = local.get("parent_task_id") or ""
         # Person field (Executor Feishu) — single source of truth for assignee
         assignee_key = local["assignee"].lstrip("@").lower() if local["assignee"] else ""
         if assignee_key:
@@ -1926,7 +2093,7 @@ def sync_project_items(db, project_id, feishu_table_id):
             if local["type"] == "Blocker":
                 # Blockers don't use start/due dates — only compare the
                 # fields kanban actually persists for a blocker.
-                r_status = _text(rf.get("Status", ""))
+                r_status = _text(rf.get("Status", "")) or local["status"]
                 remote_vals = {
                     "title_en": _text(rf.get("Title", "")),
                     "status": "done" if r_status == "done" else "blocked",
@@ -1942,7 +2109,7 @@ def sync_project_items(db, project_id, feishu_table_id):
             else:
                 remote_vals = {
                     "title_en": _text(rf.get("Title", "")),
-                    "status": _text(rf.get("Status", "")) or "todo",
+                    "status": _text(rf.get("Status", "")) or local["status"],
                     "assignee": remote_assignee,
                     "start_date": _ms_to_date(rf.get("Start Date")),
                     "due_date": _ms_to_date(rf.get("Due Date")),
@@ -1958,50 +2125,71 @@ def sync_project_items(db, project_id, feishu_table_id):
                 }
             # Check native parent hierarchy (父记录)
             native_parent = _extract_native_parent(rf, record_id_to_kid)
-            parent_changed = native_parent and native_parent != local.get("parent_task_id", "")
+            parent_field = _native_parent_field_name(rf)
+            has_native_parent = local["type"] != "Blocker" and parent_field in rf
+            if local["type"] != "Blocker" and not has_native_parent and "Parent Task ID" in rf:
+                remote_vals["parent_task_id"] = _text(rf.get("Parent Task ID"))
+                local_vals["parent_task_id"] = local.get("parent_task_id", "")
+            if has_native_parent:
+                if _extract_duplex_link_rids(rf.get(parent_field)) and not native_parent:
+                    continue  # Unmapped parent is not evidence of a clear.
+                remote_vals["parent_task_id"] = native_parent
+                local_vals["parent_task_id"] = local.get("parent_task_id", "")
+            parent_changed = has_native_parent and native_parent != local.get("parent_task_id", "")
+            etype = "blocker" if local["type"] == "Blocker" else "task"
 
             local_changed = local["updated_at"] > last_sync if last_sync else False
             remote_changed = remote_ts > last_sync if last_sync else False
             vals_differ = remote_vals != local_vals
+            if kid in value_baselines:
+                local_changed = local_vals != value_baselines[kid]
+                remote_changed = remote_vals != value_baselines[kid]
+            acknowledged_values = local_vals
+
+            if db.execute("SELECT 1 FROM sync_conflicts WHERE entity_type=? AND entity_id=? AND resolved=0 LIMIT 1", (etype, kid)).fetchone():
+                _record_entity_conflicts(db, etype, kid, local_vals, remote_vals, local["updated_at"], remote_ts, pending_only=True)
+                continue
+            if _choices_still_valid(db, etype, kid, local_vals, remote_vals, last_sync, remote_ts):
+                local_changed, remote_changed = True, False
 
             if not vals_differ and not parent_changed:
                 pass  # In sync
             elif vals_differ and local_changed and remote_changed:
                 # Both sides changed since last sync — record conflicts
                 etype = "blocker" if local["type"] == "Blocker" else "task"
-                _record_conflicts(db, etype, kid, local_vals, remote_vals,
+                _record_entity_conflicts(db, etype, kid, local_vals, remote_vals,
                                   local["updated_at"], remote_ts)
-                if parent_changed:
-                    db.execute("UPDATE tasks SET parent_task_id=?, updated_at=? WHERE id=?",
-                               (native_parent, now_iso(), kid))
-                    db.commit()
                 print(f"  [sync-proj:{project_id[:8]}] CONFLICT {kid} '{local['title'][:30]}' local_s={local_vals.get('status')} remote_s={remote_vals.get('status')}", flush=True)
+                continue
             elif vals_differ and local_changed:
                 # Only local changed — push to Feishu
                 ts = now_iso()
                 ff["updated_at"] = ts
-                update_record(feishu_table_id, remote["record_id"], ff)
+                if not _update_synced_record(feishu_table_id, remote["record_id"], ff):
+                    continue
                 pushed += 1
                 print(f"  [sync-proj:{project_id[:8]}] PUSH {kid} '{local['title'][:30]}' status={local_vals.get('status')} (local_ts={local['updated_at']} remote_ts={remote_ts} last_sync={last_sync})", flush=True)
             elif vals_differ:
                 # Values differ but local didn't change — remote must have changed.
                 # Manual Feishu UI edits don't bump the sync-managed text updated_at,
                 # so trust the observed value difference and pull from Feishu.
-                _apply_remote_v2(db, kid, local, rf)
-                if parent_changed:
-                    db.execute("UPDATE tasks SET parent_task_id=?, updated_at=? WHERE id=?",
-                               (native_parent, now_iso(), kid))
-                    db.commit()
-                update_record(feishu_table_id, remote["record_id"], {"updated_at": now_iso()})
+                incoming = dict(rf)
+                if has_native_parent:
+                    incoming["Parent Task ID"] = native_parent
+                prepared = _prepare_remote_v2(db, kid, local, incoming)
+                if prepared is None:
+                    continue
+                if not _update_synced_record(feishu_table_id, remote["record_id"], {"updated_at": now_iso()}):
+                    continue
+                if not _apply_remote_v2(db, kid, local, incoming, prepared):
+                    continue
+                acknowledged_values = remote_vals
                 pulled += 1
                 print(f"  [sync-proj:{project_id[:8]}] PULL {kid} '{local['title'][:30]}' local_s={local_vals.get('status')} remote_s={remote_vals.get('status')} (remote_changed={remote_changed} remote_ts={remote_ts} last_sync={last_sync})", flush=True)
-            elif parent_changed:
-                # Values match but parent hierarchy changed — apply parent only
-                db.execute("UPDATE tasks SET parent_task_id=?, updated_at=? WHERE id=?",
-                           (native_parent, now_iso(), kid))
-                db.commit()
 
             last_sync_ts[kid] = now_iso()
+            value_baselines[kid] = acknowledged_values
+            blocked_ids.discard(kid)
         else:
             # Not found in remote — could be Feishu deletion or incomplete read
             prev_key = f"synced_kids_{project_id}"
@@ -2017,6 +2205,7 @@ def sync_project_items(db, project_id, feishu_table_id):
             else:
                 new_rid = create_record(feishu_table_id, ff)
                 if new_rid:
+                    blocked_ids.discard(kid)
                     created_remote += 1
                     remote_by_kid[kid] = {"record_id": new_rid, "fields": ff}
                     record_id_to_kid[new_rid] = kid
@@ -2132,12 +2321,17 @@ def sync_project_items(db, project_id, feishu_table_id):
     pushed_parents = _state.get(state_key, {})
     parents_changed = False
     for kid, local in local_items.items():
-        parent_kid = local.get("parent_task_id")
-        if not parent_kid or local["type"] == "Blocker":
+        if kid in blocked_ids or local["type"] == "Blocker":
+            continue
+        current = db.execute("SELECT parent_task_id FROM tasks WHERE id=? AND deleted_at IS NULL", (kid,)).fetchone()
+        if not current:
+            continue
+        parent_kid = current["parent_task_id"] or ""
+        if not parent_kid and kid not in pushed_parents:
             continue
         child_rid = kid_to_rid.get(kid)
         parent_rid = kid_to_rid.get(parent_kid)
-        if not child_rid or not parent_rid:
+        if not child_rid or (parent_kid and not parent_rid):
             continue
         # Check if already pushed this exact parent
         if pushed_parents.get(kid) == parent_kid:
@@ -2151,8 +2345,11 @@ def sync_project_items(db, project_id, feishu_table_id):
                 continue
         try:
             rf = remote_by_kid.get(kid, {}).get("fields", {})
-            update_record(feishu_table_id, child_rid,
-                          {_native_parent_field_name(rf): {"record_ids": [parent_rid]}})
+            native_field = ('Parent items' if table_fields and 'Parent items' in table_fields
+                            else _native_parent_field_name(rf))
+            if not _update_synced_record(feishu_table_id, child_rid,
+                          {native_field: {"record_ids": [parent_rid] if parent_rid else []}}):
+                continue
             pushed_parents[kid] = parent_kid
             parents_changed = True
             print(f"  [parent] project: set {kid} -> {parent_kid}", flush=True)

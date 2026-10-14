@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added validated task and blocker sync-conflict arbitration with bilingual title
+  mapping, active-parent/date checks, task terminal-status governance, blocker
+  resolution timestamps, and atomic bulk resolution. Bug conflict `task_ids`
+  now validates unique active task IDs and updates both junction links and the
+  legacy primary task field.
 - Added validated, human-only arbitration for supported Feishu bug conflict
   fields, including fix metadata, reproduction steps, and attachment JSON;
   invalid or stale bug choices remain unresolved. Documented stable-ID retries,

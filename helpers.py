@@ -2,7 +2,7 @@
 
 import json
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi import HTTPException, Request
 from starlette.middleware.base import BaseHTTPMiddleware
@@ -165,6 +165,7 @@ def apply_bug_conflicts(conn, choices, actor):
         "title", "status", "assignee", "severity", "reporter", "environment",
         "steps", "feature", "repro_rate", "issue_time", "issue_version",
         "device_id", "issue_images", "fix_method", "fix_version", "fix_date",
+        "task_ids",
     }
     columns = {"steps": "steps_to_reproduce"}
     current = dict(row)
@@ -176,6 +177,7 @@ def apply_bug_conflicts(conn, choices, actor):
 
         changes = {}
         resolved_values = []
+        task_ids_choice = None
         for conflict, value in choices:
             field = conflict["field_name"]
             if field not in allowed_fields:
@@ -194,8 +196,22 @@ def apply_bug_conflicts(conn, choices, actor):
                         400,
                         "Issue image choices must match the remote Feishu value",
                     )
+            if field == "task_ids":
+                parsed = json.loads(value) if value else []
+                if (not isinstance(parsed, list) or
+                        any(not isinstance(task_id, str) or not task_id for task_id in parsed) or
+                        len(parsed) != len(set(parsed))):
+                    raise ValueError("task_ids must be a unique JSON array of task IDs")
+                for task_id in parsed:
+                    if not conn.execute(
+                        "SELECT id FROM tasks WHERE id=? AND deleted_at IS NULL", (task_id,)
+                    ).fetchone():
+                        raise HTTPException(400, f"Unknown or deleted task in task_ids: {task_id}")
+                parsed = sorted(parsed)
+                task_ids_choice = parsed
             model_field = columns.get(field, field)
-            changes[model_field] = parsed
+            if field != "task_ids":
+                changes[model_field] = parsed
             resolved_values.append((conflict, parsed))
 
         BugCreate.model_validate(current | changes)
@@ -207,6 +223,14 @@ def apply_bug_conflicts(conn, choices, actor):
     updates = {columns.get(field, field): value for field, value in changes.items()}
     if "issue_images" in updates:
         updates["issue_images"] = json.dumps(updates["issue_images"]) if updates["issue_images"] else ""
+    task_ids = task_ids_choice
+    if task_ids is not None:
+        conn.execute("DELETE FROM bug_task_links WHERE bug_id=?", (bug_id,))
+        conn.executemany(
+            "INSERT INTO bug_task_links (bug_id, task_id) VALUES (?, ?)",
+            [(bug_id, task_id) for task_id in task_ids],
+        )
+        updates["task_id"] = task_ids[0] if task_ids else None
     if updates.get("status") in ("resolved", "closed"):
         updates["resolved_at"] = now_iso()
     updates["updated_at"] = now_iso()
@@ -217,10 +241,164 @@ def apply_bug_conflicts(conn, choices, actor):
     for conflict, value in resolved_values:
         if conflict["field_name"] == "issue_images":
             value = json.dumps(value) if value else ""
+        elif conflict["field_name"] == "task_ids":
+            value = json.dumps(value)
         conn.execute(
             "UPDATE sync_conflicts SET local_value=? WHERE id=?",
             (str(value or ""), conflict["id"]),
         )
+
+
+def _sync_text_field(value, english_field, chinese_field):
+    """Map Feishu's single text value into the appropriate bilingual column."""
+    value = value or ""
+    cjk_ranges = (
+        (0x2E80, 0x2FFF), (0x3000, 0x30FF), (0x3100, 0x31FF),
+        (0x3400, 0x4DBF), (0x4E00, 0x9FFF), (0xAC00, 0xD7AF),
+        (0xF900, 0xFAFF), (0xFF00, 0xFFEF),
+    )
+    field = chinese_field if any(
+        any(start <= ord(char) <= end for start, end in cjk_ranges) for char in value
+    ) else english_field
+    return field, value
+
+
+def _validate_sync_dates(changes):
+    for field in ("start_date", "due_date"):
+        if field not in changes:
+            continue
+        value = changes[field]
+        if value in (None, ""):
+            changes[field] = None
+            continue
+        try:
+            parsed = date.fromisoformat(value)
+        except (TypeError, ValueError):
+            raise HTTPException(400, f"Invalid {field}; expected an ISO date")
+        if parsed.isoformat() != value:
+            raise HTTPException(400, f"Invalid {field}; expected an ISO date")
+
+
+def _task_conflict_updates(conn, choices, actor):
+    from models import TaskUpdate
+    from pydantic import ValidationError
+
+    task_id = choices[0][0]["entity_id"]
+    row = conn.execute("SELECT * FROM tasks WHERE id=? AND deleted_at IS NULL", (task_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "Task not found or deleted")
+    current = dict(row)
+    changes = {}
+    for conflict, value in choices:
+        field = conflict["field_name"]
+        if field not in {"title_en", "status", "assignee", "start_date", "due_date", "notes", "parent_task_id"}:
+            raise HTTPException(400, "Unsupported task conflict field")
+        if field == "title_en":
+            target, value = _sync_text_field(value, "title_en", "title_zh")
+            changes[target] = value
+            if target == "title_en":
+                changes["title_zh"] = ""
+        elif field in ("start_date", "due_date"):
+            changes[field] = value or None
+        elif field == "parent_task_id":
+            changes[field] = value or None
+        else:
+            changes[field] = value
+    try:
+        _validate_sync_dates(changes)
+        updates = TaskUpdate.model_validate(changes).model_dump(exclude_unset=True)
+    except HTTPException:
+        raise
+    except (TypeError, ValueError, ValidationError):
+        raise HTTPException(400, "Invalid task conflict value")
+
+    if updates.get("status") in ("done", "abandoned"):
+        action = "mark tasks as done — use 'in_review' instead" if updates["status"] == "done" else "mark tasks as abandoned — humans only"
+        _require_human(conn, actor, action, "task", task_id)
+    if "parent_task_id" in updates and updates["parent_task_id"]:
+        parent_id = updates["parent_task_id"]
+        parent = conn.execute(
+            "SELECT id, workstream_id FROM tasks WHERE id=? AND deleted_at IS NULL", (parent_id,)
+        ).fetchone()
+        if not parent or parent["workstream_id"] != current["workstream_id"]:
+            raise HTTPException(400, "Parent task must be active in the same workstream")
+        descendants = conn.execute(
+            "WITH RECURSIVE descendants(id) AS ("
+            "SELECT id FROM tasks WHERE parent_task_id=? AND deleted_at IS NULL UNION "
+            "SELECT t.id FROM tasks t JOIN descendants d ON t.parent_task_id=d.id WHERE t.deleted_at IS NULL) "
+            "SELECT id FROM descendants", (task_id,),
+        ).fetchall()
+        if parent_id == task_id or parent_id in {item["id"] for item in descendants}:
+            raise HTTPException(400, "Parent task would create a cycle")
+    return task_id, updates, choices
+
+
+def apply_task_conflict(conn, conflict, value, actor):
+    apply_task_conflicts(conn, [(conflict, value)], actor)
+
+
+def apply_task_conflicts(conn, choices, actor):
+    """Validate and apply all selected conflicts for one active task."""
+    if not choices:
+        return
+    task_id, updates, resolved_values = _task_conflict_updates(conn, choices, actor)
+    if updates:
+        updates["updated_at"] = now_iso()
+        conn.execute(
+            f"UPDATE tasks SET {','.join(field+'=?' for field in updates)} WHERE id=? AND deleted_at IS NULL",
+            [*updates.values(), task_id],
+        )
+    for conflict, value in resolved_values:
+        conn.execute("UPDATE sync_conflicts SET local_value=? WHERE id=?", (str(value or ""), conflict["id"]))
+
+
+def apply_blocker_conflict(conn, conflict, value):
+    apply_blocker_conflicts(conn, [(conflict, value)])
+
+
+def apply_blocker_conflicts(conn, choices):
+    """Validate and apply all selected conflicts for one active blocker."""
+    from models import BlockerUpdate
+    from pydantic import ValidationError
+
+    if not choices:
+        return
+    blocker_id = choices[0][0]["entity_id"]
+    row = conn.execute("SELECT * FROM blockers WHERE id=? AND deleted_at IS NULL", (blocker_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "Blocker not found or deleted")
+    changes = {}
+    for conflict, value in choices:
+        field = conflict["field_name"]
+        if field == "status":
+            if value not in ("done", "blocked"):
+                raise HTTPException(400, "Invalid blocker status")
+            changes["resolved"] = value == "done"
+        elif field in ("title_en", "description_en"):
+            target, value = _sync_text_field(value, "description_en", "description_zh")
+            changes[target] = value
+            if target == "description_en":
+                changes["description_zh"] = ""
+        elif field in BlockerUpdate.model_fields:
+            changes[field] = value
+        else:
+            raise HTTPException(400, "Unsupported blocker conflict field")
+    try:
+        update_fields = {k: v for k, v in changes.items() if k != "resolved"}
+        updates = BlockerUpdate.model_validate(update_fields).model_dump(exclude_unset=True)
+    except (TypeError, ValueError, ValidationError):
+        raise HTTPException(400, "Invalid blocker conflict value")
+    updates.update({k: v for k, v in changes.items() if k == "resolved"})
+    if "resolved" in updates:
+        updates["resolved_at"] = now_iso() if updates["resolved"] else None
+    if updates:
+        updates["updated_at"] = now_iso()
+        conn.execute(
+            f"UPDATE blockers SET {','.join(field+'=?' for field in updates)} WHERE id=? AND deleted_at IS NULL",
+            [*updates.values(), blocker_id],
+        )
+    for conflict, value in choices:
+        conn.execute("UPDATE sync_conflicts SET local_value=? WHERE id=?", (str(value or ""), conflict["id"]))
 
 
 def _is_bot(conn: sqlite3.Connection, actor: str) -> bool:

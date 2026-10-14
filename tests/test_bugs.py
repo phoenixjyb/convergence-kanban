@@ -1,6 +1,22 @@
 """Bug CRUD and task linking tests."""
 
 
+def test_bug_link_changes_mark_updated_and_ignore_invalid_first_task(client, human_headers, monkeypatch):
+    from routes import bugs as route
+    pid = client.post('/api/projects', json={'name_en':'Links'}, headers=human_headers).json()['id']
+    wid = client.post('/api/workstreams', json={'project_id':pid,'title_en':'Links'}, headers=human_headers).json()['id']
+    tid = client.post('/api/tasks', json={'workstream_id':wid,'title_en':'Task'}, headers=human_headers).json()['id']
+    bid = client.post('/api/bugs', json={'title':'Bug'}, headers=human_headers).json()['id']
+    monkeypatch.setattr(route, 'now_iso', lambda: '2099-01-01 12:00:00')
+    response = client.post(f'/api/bugs/{bid}/tasks', json={'task_ids':['missing',tid]}, headers=human_headers)
+    assert response.status_code == 200
+    assert client.get(f'/api/bugs/{bid}').json()['task_id'] == tid
+    assert client.get(f'/api/bugs/{bid}').json()['updated_at'] == '2099-01-01 12:00:00'
+    monkeypatch.setattr(route, 'now_iso', lambda: '2099-01-01 12:00:01')
+    assert client.delete(f'/api/bugs/{bid}/tasks/{tid}', headers=human_headers).status_code == 200
+    assert client.get(f'/api/bugs/{bid}').json()['updated_at'] == '2099-01-01 12:00:01'
+
+
 def test_bug_create(client, human_headers):
     pid = client.post("/api/projects", json={"name_en": "BugP"},
                       headers=human_headers).json()["id"]
