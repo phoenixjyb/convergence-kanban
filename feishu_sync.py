@@ -259,8 +259,16 @@ def create_record(table_id, fields):
     return resp.get("data", {}).get("record", {}).get("record_id")
 
 def update_record(table_id, record_id, fields):
-    feishu_api(f"/bitable/v1/apps/{bt()}/tables/{table_id}/records/{record_id}",
+    return feishu_api(f"/bitable/v1/apps/{bt()}/tables/{table_id}/records/{record_id}",
                method="PUT", data={"fields": fields})
+
+
+def _update_bug_record(table_id, record_id, fields):
+    response = update_record(table_id, record_id, fields)
+    if not isinstance(response, dict) or response.get("code") != 0:
+        print("  [sync-bugs] update not acknowledged; retaining checkpoint for retry", flush=True)
+        return False
+    return True
 
 def delete_record(table_id, record_id):
     feishu_api(f"/bitable/v1/apps/{bt()}/tables/{table_id}/records/{record_id}",
@@ -1446,6 +1454,10 @@ def sync_bugs_v2(db, proj_record_map, table_key="bugs_table",
             rf = remote.get("fields", {})
             remote_ts = _text(rf.get("updated_at", ""))
             remote_display_id = _text(rf.get("Bug ID", ""))
+            remote_status = _text(rf.get("Status", ""))
+            if remote_status and remote_status not in FEISHU_TO_STATUS:
+                print("  [sync-bugs] unsupported remote status; preserving record", flush=True)
+                continue
 
             # Older synced Feishu rows can have kanban_id populated while the
             # generated human-facing Bug ID column is still blank, or can retain
@@ -1456,10 +1468,11 @@ def sync_bugs_v2(db, proj_record_map, table_key="bugs_table",
                 not remote_display_id
                 or _is_legacy_display_id(remote_display_id, local["display_id"])
             ):
-                update_record(bugs_tid, remote["record_id"], {
+                if not _update_bug_record(bugs_tid, remote["record_id"], {
                     "Bug ID": local["display_id"],
                     "updated_at": now_iso(),
-                })
+                }):
+                    continue
                 pushed += 1
 
             # ── Build comparison dicts ────────────────────────────
@@ -1470,7 +1483,10 @@ def sync_bugs_v2(db, proj_record_map, table_key="bugs_table",
             if asg_name and asg_oid:
                 _save_feishu_open_id(db, asg_name, asg_oid)
 
-            r_status = FEISHU_TO_STATUS.get(_text(rf.get("Status", "")), "open")
+            # Feishu has fewer states: retain a precise local state when its
+            # projection already matches (e.g. investigating -> In Progress).
+            r_status = (local["status"] if STATUS_TO_FEISHU.get(local["status"]) == remote_status
+                        else FEISHU_TO_STATUS.get(remote_status, "open"))
             r_severity = FEISHU_TO_SEV.get(_text(rf.get("优先级", "")), "medium")
             r_feature = _text(rf.get("功能", ""))
             r_repro = _text(rf.get("复现频率", ""))
@@ -1559,7 +1575,8 @@ def sync_bugs_v2(db, proj_record_map, table_key="bugs_table",
                 # Only local changed — push to Feishu
                 ts = now_iso()
                 ff["updated_at"] = ts
-                update_record(bugs_tid, remote["record_id"], ff)
+                if not _update_bug_record(bugs_tid, remote["record_id"], ff):
+                    continue
                 pushed += 1
                 print(f"  [sync-bugs] PUSH {kid} status={local_vals.get('status')} (local_ts={local['updated_at']} remote_ts={remote_ts} last_sync={last_sync})", flush=True)
             else:
@@ -1571,6 +1588,9 @@ def sync_bugs_v2(db, proj_record_map, table_key="bugs_table",
                     r_severity = "medium"
                 # FK constraint: empty string project_id fails. Use None instead.
                 r_project_id = FEATURE_TO_PROJECT.get(r_feature, "") or local.get("project_id", "") or None
+                ts = now_iso()
+                if not _update_bug_record(bugs_tid, remote["record_id"], {"updated_at": ts}):
+                    continue
                 db.execute(
                     "UPDATE bugs SET title=?, status=?, assignee=?, severity=?, "
                     "reporter=?, environment=?, steps_to_reproduce=?, "
@@ -1585,7 +1605,7 @@ def sync_bugs_v2(db, proj_record_map, table_key="bugs_table",
                      r_feature, r_repro, r_issue_time,
                      r_issue_version, r_device_id, r_issue_images_json,
                      r_fix_method, r_fix_version, r_fix_date,
-                     r_project_id, now_iso(), kid)
+                     r_project_id, ts, kid)
                 )
                 # Sync Task DuplexLink → bug_task_links
                 remote_task_rids = _extract_duplex_link_rids(rf.get("Related Task"))
@@ -1593,7 +1613,6 @@ def sync_bugs_v2(db, proj_record_map, table_key="bugs_table",
                                     if rid in task_rid_to_kid]
                 if remote_task_kids:
                     _sync_bug_task_links(db, kid, remote_task_kids)
-                update_record(bugs_tid, remote["record_id"], {"updated_at": now_iso()})
                 pulled += 1
                 print(f"  [sync-bugs] PULL {kid} local_s={local_vals.get('status')} remote_s={remote_vals.get('status')} (remote_ts={remote_ts} last_sync={last_sync})", flush=True)
 
@@ -1618,6 +1637,10 @@ def sync_bugs_v2(db, proj_record_map, table_key="bugs_table",
         f = rec.get("fields", {})
         title = _text(f.get("Title", ""))
         if not title:
+            continue
+        remote_status = _text(f.get("Status", ""))
+        if remote_status and remote_status not in FEISHU_TO_STATUS:
+            print("  [sync-bugs] unsupported new remote status; skipping import", flush=True)
             continue
         kid = uuid.uuid4().hex[:8]
 

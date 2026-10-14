@@ -16,6 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- Hardened existing linked Feishu bug sync with acknowledgement-gated
+  checkpoint/local apply and preservation of precise local statuses when Feishu's
+  projected status matches, and handling of blank or unsupported statuses and
+  historical missing fix metadata.
 - Expanded agent and team workflow docs for Feishu QA tickets: agents use the
   kanban API instead of personal Feishu tokens, the backend owns Feishu wiki
   page creation, and common 401/503/wiki-permission failures are documented.

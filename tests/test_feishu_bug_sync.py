@@ -15,12 +15,13 @@ def bridge(tmp_path, monkeypatch):
     database.init_db()
     conn = sqlite3.connect(tmp_path / 'kanban.db')
     conn.row_factory = sqlite3.Row
+    conn.execute('PRAGMA foreign_keys=ON')
     records, writes, creates = [], [], []
     monkeypatch.setattr(sync, '_state', {'bugs_table': 'qa', 'rd_bugs_table': 'rd'})
     monkeypatch.setattr(sync, 'save_state', lambda: None)
     monkeypatch.setattr(sync, 'list_records', lambda table: (copy.deepcopy(records), True))
     monkeypatch.setattr(sync, '_load_feature_to_project_map', lambda: {})
-    monkeypatch.setattr(sync, 'update_record', lambda table, rid, fields: writes.append((table, rid, fields)))
+    monkeypatch.setattr(sync, 'update_record', lambda table, rid, fields: writes.append((table, rid, fields)) or {'code': 0})
     monkeypatch.setattr(sync, 'create_record', lambda table, fields: creates.append((table, fields)) or 'created')
     monkeypatch.setattr(sync, 'delete_record', lambda *args: pytest.fail('Unexpected Feishu delete'))
     monkeypatch.setattr(sync, 'now_iso', lambda: '2026-10-14 12:00:00')
@@ -110,3 +111,72 @@ def test_missing_rd_uses_its_own_synced_id_set(bridge):
     sync.sync_bugs_v2(conn, {}, 'rd_bugs_table', 'agent', '_rd')
     assert conn.execute("SELECT deleted_at FROM bugs").fetchone()[0]
     assert not creates
+
+
+@pytest.mark.parametrize('status,remote_status', [('investigating', 'In Progress'), ('resolved', 'Done'), ('wontfix', 'Done')])
+def test_coarse_feishu_status_does_not_overwrite_precise_local_state(bridge, status, remote_status):
+    conn, records, writes, creates = bridge
+    record = existing(conn, status=status)
+    record['fields'].update(Status=remote_status, Title='Remote title edit')
+    records.append(record)
+    sync.sync_bugs_v2(conn, {})
+    row = conn.execute('SELECT title,status FROM bugs').fetchone()
+    assert tuple(row) == ('Remote title edit', status)
+
+
+def test_explicit_remote_status_change_still_pulls(bridge):
+    conn, records, writes, creates = bridge
+    record = existing(conn, status='investigating')
+    record['fields']['Status'] = 'Hold'
+    records.append(record)
+    sync.sync_bugs_v2(conn, {})
+    assert conn.execute('SELECT status FROM bugs').fetchone()[0] == 'hold'
+
+
+@pytest.mark.parametrize('response', [{'code': 999}, None])
+def test_failed_push_keeps_checkpoint_and_local_change_for_retry(bridge, monkeypatch, response):
+    conn, records, writes, creates = bridge
+    records.append(existing(conn, status='fix_complete', updated_at='2026-10-15 12:00:00'))
+    sync._state['last_sync_ts_bugs'] = {'bug': '2026-10-02 12:00:00'}
+    monkeypatch.setattr(sync, 'update_record', lambda *args: response)
+    sync.sync_bugs_v2(conn, {})
+    assert sync._state['last_sync_ts_bugs']['bug'] == '2026-10-02 12:00:00'
+    assert conn.execute('SELECT status FROM bugs').fetchone()[0] == 'fix_complete'
+    monkeypatch.setattr(sync, 'update_record', lambda table, rid, fields: writes.append(fields) or {'code': 0})
+    sync.sync_bugs_v2(conn, {})
+    assert writes[-1]['Status'] == 'Fix Complete'
+    assert sync._state['last_sync_ts_bugs']['bug'] == '2026-10-14 12:00:00'
+
+
+def test_failed_pull_ack_does_not_change_local_row(bridge, monkeypatch):
+    conn, records, writes, creates = bridge
+    record = existing(conn)
+    record['fields']['Status'] = 'Hold'
+    records.append(record)
+    sync._state['last_sync_ts_bugs'] = {'bug': '2026-10-02 12:00:00'}
+    before = tuple(conn.execute('SELECT * FROM bugs').fetchone())
+    monkeypatch.setattr(sync, 'update_record', lambda *args: {'code': 999})
+    sync.sync_bugs_v2(conn, {})
+    assert tuple(conn.execute('SELECT * FROM bugs').fetchone()) == before
+    assert sync._state['last_sync_ts_bugs']['bug'] == '2026-10-02 12:00:00'
+
+
+def test_failed_id_backfill_does_not_checkpoint(bridge, monkeypatch):
+    conn, records, writes, creates = bridge
+    record = existing(conn)
+    record['fields']['Bug ID'] = ''
+    records.append(record)
+    monkeypatch.setattr(sync, 'update_record', lambda *args: {'code': 999})
+    sync.sync_bugs_v2(conn, {})
+    assert 'bug' not in sync._state.get('last_sync_ts_bugs', {})
+
+
+def test_unknown_remote_status_is_not_silently_imported_as_open(bridge):
+    conn, records, writes, creates = bridge
+    record = existing(conn, status='hold')
+    record['fields'].update(Status='Custom QA decision', Title='Remote edit')
+    records.extend([record, {'record_id': 'new', 'fields': {'Title': 'New bug', 'Status': 'Custom QA decision'}}])
+    sync.sync_bugs_v2(conn, {})
+    assert tuple(conn.execute('SELECT title,status FROM bugs').fetchone()) == ('Title', 'hold')
+    assert conn.execute('SELECT count(*) FROM bugs').fetchone()[0] == 1
+    assert not writes
