@@ -54,6 +54,66 @@ VERIFICATION_TOKEN = os.getenv("FEISHU_VERIFICATION_TOKEN", "")
 KANBAN_API = os.getenv("KANBAN_API_URL", "http://127.0.0.1:8666/api")
 KANBAN_WEB_URL = os.getenv("KANBAN_WEB_URL", "http://localhost:8666")
 BOT_USER = "feishu-bot"
+BOT_OPEN_ID = ""
+
+QUERY_COMMANDS = {
+    "login", "登录", "help", "帮助", "my tasks", "我的任务", "my", "我的",
+    "blockers", "阻塞项", "progress", "进度", "alerts", "提醒", "digest", "摘要",
+    "bugs", "缺陷", "workload", "工作量", "conflicts", "冲突",
+}
+ACTION_USAGE = {
+    "done": "done <#|id|keyword>", "完成": "完成 <#|id|keyword>",
+    "search": "search <keyword>", "搜索": "搜索 <keyword>",
+    "assign": "assign <#|id|keyword> <user>", "分配": "分配 <#|id|keyword> <user>",
+    "new": "new <title>", "新建": "新建 <title>",
+    "update": "update <#|id|keyword> <status>", "更新": "更新 <#|id|keyword> <status>",
+    "bug": "bug [severity] <title>", "报bug": "报bug [severity] <title>",
+    "time": "time <#|id|keyword> <minutes> [desc]", "计时": "计时 <#|id|keyword> <minutes> [desc]",
+    "comment": "comment <#|id|keyword> <text>", "评论": "评论 <#|id|keyword> <text>",
+    "resolve": "resolve <blocker_id>", "解决": "解决 <blocker_id>",
+}
+
+
+def _known_command(text: str) -> bool:
+    lower = text.strip().lower()
+    return lower in QUERY_COMMANDS or bool(lower and lower.split()[0] in ACTION_USAGE)
+
+
+def _event_command(msg, text: str) -> str | None:
+    """Group commands require this bot's verified mention, not @all or a name."""
+    if not isinstance(text, str) or not text.strip():
+        return None
+    text = text.strip()
+    chat_type = getattr(msg, "chat_type", "")
+    if chat_type == "group":
+        if not BOT_OPEN_ID:
+            return None
+        for mention in getattr(msg, "mentions", None) or []:
+            identity = getattr(mention, "id", None)
+            key = getattr(mention, "key", None)
+            if (getattr(identity, "open_id", None) == BOT_OPEN_ID
+                    and isinstance(key, str) and key and text.startswith(key)):
+                command = text[len(key):].strip()
+                return command if _known_command(command) else None
+        return None
+    if chat_type == "p2p":
+        return text if _known_command(text) else None
+    return None
+
+
+def _load_bot_open_id(client) -> str:
+    """Resolve the application bot identity once, without logging credentials."""
+    try:
+        req = lark.BaseRequest()
+        req.uri = "/open-apis/bot/v3/info"
+        req.http_method = lark.HttpMethod.GET
+        req.token_types = {lark.AccessTokenType.TENANT}
+        response = client.request(req)
+        if response.success():
+            return json.loads(response.raw.content).get("bot", {}).get("open_id", "")
+    except Exception:
+        pass
+    return ""
 
 # ── Kanban API helpers ────────────────────────────────────────────────────
 
@@ -692,12 +752,17 @@ def _get_sender_name(client, user_id: str) -> str:
     return user_id
 
 
-def route_command(text: str, sender_name: str, open_id: str = "") -> str:
+def route_command(text: str, sender_name: str, open_id: str = "") -> str | None:
     """Parse text and route to the appropriate command handler."""
     text = text.strip()
     # Strip @bot mention prefix if present
     text = re.sub(r'^@\S+\s*', '', text).strip()
     lower = text.lower()
+
+    if not _known_command(text):
+        return None
+    if lower in ACTION_USAGE:
+        return f"Usage: `{ACTION_USAGE[lower]}`"
 
     if lower in ("login", "登录"):
         return cmd_login(open_id)
@@ -773,15 +838,7 @@ def route_command(text: str, sender_name: str, open_id: str = "") -> str:
             return "Usage: `resolve <blocker_id>`\nExample: `resolve b1c2d3e4`"
         return cmd_resolve_blocker(bid)
     else:
-        # Try to suggest close matches
-        suggestions = []
-        for cmd in ("login", "my", "help", "bugs", "blockers", "progress", "search", "workload",
-                    "alerts", "digest", "conflicts", "done", "update", "assign", "new",
-                    "bug", "time", "comment", "resolve"):
-            if lower.startswith(cmd[:3]) or cmd.startswith(lower[:3]):
-                suggestions.append(cmd)
-        hint = f"\nDid you mean: {', '.join(f'`{s}`' for s in suggestions[:3])}?" if suggestions else ""
-        return f"Unknown command: **{text}**\nType **help** for available commands.{hint}"
+        return None
 
 
 # ── Event handler ────────────────────────────────────────────────────────
@@ -804,21 +861,26 @@ def handle_message(client, event_data):
 
     try:
         content = json.loads(msg.content or "{}")
+        if not isinstance(content, dict):
+            return
         text = content.get("text", "")
     except (json.JSONDecodeError, TypeError):
         return
 
-    if not text.strip():
+    sender = event_data.sender
+    if getattr(sender, "sender_type", None) == "app":
+        return
+    command = _event_command(msg, text)
+    if command is None:
         return
 
     # Get sender info — resolve Feishu open_id to kanban username
-    sender = event_data.sender
     user_id = sender.sender_id.open_id if sender and sender.sender_id else "unknown"
     sender_name = _resolve_sender(client, user_id)
 
     # Route command — try interactive card first, fall back to text
     card_json = None
-    cmd_clean = re.sub(r'^@\S+\s*', '', text.strip()).strip().lower()
+    cmd_clean = command.lower()
     if cmd_clean in ("login", "登录"):
         try:
             result = kanban_post("/auth/token", {"open_id": user_id})
@@ -850,9 +912,11 @@ def handle_message(client, event_data):
 
     if card_json is None:
         try:
-            reply_text = route_command(text, sender_name, open_id=user_id)
+            reply_text = route_command(command, sender_name, open_id=user_id)
         except Exception as e:
             reply_text = f"Error: {e}"
+        if reply_text is None:
+            return
         card_json = {
             "elements": [{
                 "tag": "div",
@@ -874,6 +938,7 @@ def handle_message(client, event_data):
 # ── Main ─────────────────────────────────────────────────────────────────
 
 def main():
+    global BOT_OPEN_ID
     if not _HAS_LARK:
         print("Error: lark-oapi not installed. Run: pip install lark-oapi>=1.3.0")
         sys.exit(1)
@@ -882,6 +947,11 @@ def main():
         sys.exit(1)
 
     client = lark.Client.builder().app_id(APP_ID).app_secret(APP_SECRET).build()
+    BOT_OPEN_ID = _load_bot_open_id(client)
+    if BOT_OPEN_ID:
+        print("[bot] Group commands enabled: bot identity resolved")
+    else:
+        print("[bot] Bot identity unavailable; group commands disabled until restart")
 
     handler = (
         lark.EventDispatcherHandler.builder(ENCRYPT_KEY, VERIFICATION_TOKEN)

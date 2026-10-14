@@ -3,7 +3,7 @@
 from fastapi import APIRouter, HTTPException, Request
 
 from db import get_db
-from helpers import get_actor, log_activity, now_iso
+from helpers import _require_human, apply_issue_conflict, apply_issue_conflicts, get_actor, log_activity, now_iso
 from models import ConflictResolve
 
 router = APIRouter(prefix="/api", tags=["sync_conflicts"])
@@ -13,11 +13,12 @@ router = APIRouter(prefix="/api", tags=["sync_conflicts"])
 def list_conflicts(resolved: bool = False):
     with get_db() as conn:
         rows = conn.execute(
-            "SELECT sc.*, COALESCE(t.title_en, b.description_en, bg.title, '') as entity_title "
+            "SELECT sc.*, COALESCE(t.title_en, b.description_en, bg.title, i.title, '') as entity_title "
             "FROM sync_conflicts sc "
             "LEFT JOIN tasks t ON sc.entity_type='task' AND t.id=sc.entity_id "
             "LEFT JOIN blockers b ON sc.entity_type='blocker' AND b.id=sc.entity_id "
             "LEFT JOIN bugs bg ON sc.entity_type='bug' AND bg.id=sc.entity_id "
+            "LEFT JOIN issues i ON sc.entity_type='issue' AND i.id=sc.entity_id "
             "WHERE sc.resolved=? ORDER BY sc.created_at DESC",
             (1 if resolved else 0,)).fetchall()
         return [dict(r) for r in rows]
@@ -45,6 +46,8 @@ def resolve_conflict(cid: str, body: ConflictResolve, request: Request):
                           "start_date", "due_date", "notes", "priority", "severity"}
         table = table_map.get(conflict["entity_type"])
         field = conflict["field_name"]
+        if conflict["entity_type"] == "issue":
+            apply_issue_conflict(conn, conflict, value, actor)
         if table and field and field in allowed_fields:
             if table == "blockers":
                 # blockers table has no updated_at column
@@ -68,6 +71,17 @@ def resolve_all_conflicts(body: ConflictResolve, request: Request):
         table_map = {"task": "tasks", "blocker": "blockers", "bug": "bugs"}
         allowed_fields = {"title", "title_en", "description_en", "status", "assignee",
                           "start_date", "due_date", "notes", "priority", "severity"}
+        issue_choices = {}
+        for c in conflicts:
+            if c["entity_type"] == "issue":
+                value = (body.manual_value if body.resolution == "manual"
+                         else c["local_value"] if body.resolution == "local" else c["remote_value"])
+                issue_choices.setdefault(c["entity_id"], []).append((c, value))
+        for choices in issue_choices.values():
+            if any(c["field_name"] == "deleted_at" or (c["field_name"] == "status" and value == "closed") for c, value in choices):
+                _require_human(conn, actor, "close/archive/restore issues")
+        for choices in issue_choices.values():
+            apply_issue_conflicts(conn, choices, actor)
         for c in conflicts:
             value = (body.manual_value if body.resolution == "manual"
                      else c["local_value"] if body.resolution == "local"

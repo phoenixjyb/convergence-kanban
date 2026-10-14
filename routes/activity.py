@@ -11,13 +11,6 @@ from models import ImportPayload
 
 router = APIRouter(prefix="/api", tags=["activity"])
 
-STATUS_MAP = {
-    "✅ merged": "done", "stable": "stable", "deployed": "stable",
-    "doc-ready": "stable", "dry-run-verified": "in-progress",
-    "in-progress": "in-progress", "planned": "planned",
-}
-
-
 @router.get("/activity")
 def get_activity(limit: int = 50):
     with get_db() as conn:
@@ -43,8 +36,6 @@ def import_session_status(payload: ImportPayload):
         for key, ws in workstreams.items():
             wid = key[:8]
             title = ws.get("title", key)
-            status_raw = ws.get("status", "planned")
-            status = STATUS_MAP.get(status_raw, "in-progress")
             priority = ws.get("priority", "medium")
             if priority not in ("critical", "high", "medium", "low"):
                 priority = "medium"
@@ -53,14 +44,14 @@ def import_session_status(payload: ImportPayload):
             existing = conn.execute("SELECT id FROM workstreams WHERE id=?", (wid,)).fetchone()
             if existing:
                 conn.execute(
-                    "UPDATE workstreams SET title_en=?, status=?, priority=?, summary_en=?, updated_at=? WHERE id=?",
-                    (title, status, priority, summary, now_iso(), wid)
+                    "UPDATE workstreams SET title_en=?, priority=?, summary_en=?, updated_at=? WHERE id=?",
+                    (title, priority, summary, now_iso(), wid)
                 )
             else:
                 conn.execute(
                     "INSERT INTO workstreams (id, project_id, title_en, owner, priority, status, summary_en) "
                     "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (wid, project_id, title, "", priority, status, summary)
+                    (wid, project_id, title, "", priority, "planned", summary)
                 )
 
             for i, pending in enumerate(ws.get("pending", [])):

@@ -218,7 +218,7 @@ def test_resolve_blocker(bot, client, human_headers):
 
 def test_unknown_command(bot):
     result = bot.route_command("foobar nonsense", "test-human")
-    assert "Unknown command" in result
+    assert result is None
 
 
 def test_strip_at_mention(bot):

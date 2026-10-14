@@ -4,6 +4,9 @@ This file is auto-read by Claude Code when you open this repo. It applies to
 the **kanban service itself**, not to projects that consume the kanban as
 their own AI-agent backend.
 
+中文说明：本文件只约束 ConvergenceKanban 服务本身的开发；其他项目中的 Agent
+如果要使用这个 Kanban，应拉取实时集成指南。
+
 If you're an AI agent in *another* repo and want to interact with this
 kanban (file bugs, submit QA tickets, etc.), fetch the live integration
 guide:
@@ -74,6 +77,13 @@ pytest tests/ -x -q        # ~220 tests; should pass under 5 seconds
 - Bot governance — users have `role` (`human` / `bot`). Unknown actors are treated as bots. Bots cannot mark tasks `done` / `abandoned`, delete projects/workstreams/tasks/bugs, create projects/workstreams, change workstream priorities, or change user roles. They submit `in_review` for human approval. Bug creation: bots are silently coerced to `source='agent'` (goes to a separate bug table from `source='manual'`). Bots can modify any bug regardless of source.
 - Route order: literal routes (`/projects/reorder`) must be registered before parameterized (`/projects/{pid}`).
 
+中文规则摘要：
+
+- 不提交 `.env*` 或 `data/`，凭据和数据库都属于部署状态。
+- Bot 不能直接把任务设为 `done` / `abandoned`，完成后进入 `in_review`。
+- Bot 新建缺陷进入 `source='agent'` 表；QA 手工缺陷可以被 Bot 修改修复信息。
+- 字面量路由要先于参数路由注册。
+
 ## Bug status flow
 
 `open → investigating → fixing → fix_complete → to_verify → resolved → closed` (also `wontfix`)
@@ -83,6 +93,10 @@ pytest tests/ -x -q        # ~220 tests; should pass under 5 seconds
 
 When moving a bug to `fix_complete`/`to_verify`/`resolved`, also populate the fix metadata (`fix_method`, `fix_version`, `fix_date`) in the same call.
 
+中文：MR/commit 级修复默认到 `fix_complete`；进入正式验证构建后才到
+`to_verify`。进入 `fix_complete` / `to_verify` / `resolved` 时必须同时填写
+`fix_method`、`fix_version`、`fix_date`。
+
 ## Display IDs
 
 Human-readable bug IDs use `BUG-YYMMDD-NNN` (manual / QA) or `RD-YYMMDD-NNN` (agent). NNN resets daily per prefix.
@@ -90,6 +104,9 @@ Human-readable bug IDs use `BUG-YYMMDD-NNN` (manual / QA) or `RD-YYMMDD-NNN` (ag
 ## Optional Feishu features
 
 All Feishu features are opt-in via env vars (see `.env.example` + `docs/SETUP.md`). If `FEISHU_APP_ID` is blank, the kanban runs standalone — no sync, no chat bot, no wiki tickets. Everything still works via the REST API and web UI.
+
+中文：飞书能力都是可选配置。QA ticket 统一通过 Kanban API 创建，不使用个人飞书
+机器人 token；Kanban 后端使用部署配置中的飞书应用/机器人创建 wiki 页面。
 
 ## See also
 

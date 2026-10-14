@@ -127,5 +127,6 @@ def test_abandoned_counts_as_complete_in_dashboard(client, human_headers):
     r = client.get("/api/dashboard", headers=human_headers).json()
     ws = next(w for p in r if p["id"] == pid for w in p["workstreams"] if w["id"] == wsid)
     # Both done and abandoned roll up into 'done' for completion accounting
+    assert ws["status"] == "done"
     assert ws["task_stats"]["done"] == 2
     assert ws["task_stats"]["abandoned"] == 1

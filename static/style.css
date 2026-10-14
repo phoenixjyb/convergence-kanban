@@ -1409,6 +1409,54 @@ tr.dragging { opacity: 0.3; }
   font-size: 0.68rem;
 }
 
+.sync-issue-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.sync-issue-row {
+  padding: 9px 10px;
+  background: var(--bg2);
+  border: 1px solid rgba(80, 250, 123, 0.1);
+  border-left: 3px solid var(--green);
+  border-radius: var(--radius);
+}
+
+.sync-issue-row.has-issues {
+  border-color: rgba(255, 140, 66, 0.18);
+  border-left-color: var(--orange);
+}
+
+.sync-issue-title {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  color: var(--text2);
+  font-size: 0.75rem;
+  margin-bottom: 7px;
+}
+
+.sync-issue-title span {
+  color: var(--text3);
+  font-family: var(--font-mono);
+  font-size: 0.68rem;
+}
+
+.sync-issue-metrics {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 5px 10px;
+  color: var(--text3);
+  font-size: 0.68rem;
+}
+
+.sync-issue-metrics strong {
+  color: var(--text);
+  font-family: var(--font-mono);
+}
+
 #conflictBtn { position: relative; }
 #conflictCount {
   background: var(--orange);

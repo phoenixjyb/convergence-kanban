@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Expanded agent and team workflow docs for Feishu QA tickets: agents use the
+  kanban API instead of personal Feishu tokens, the backend owns Feishu wiki
+  page creation, and common 401/503/wiki-permission failures are documented.
+- Added bilingual EN/ZH explanations to the team workflow, agent quickstart,
+  full agent guide, and repo-local agent instruction files.
+
 ## [0.3.2] — 2026-07-07
 
 ### Added

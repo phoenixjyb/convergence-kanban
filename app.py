@@ -19,7 +19,7 @@ from helpers import RequireLoginMiddleware
 from routes import (
     projects, workstreams, tasks, dependencies, time_tracking,
     attachments, recurring, sync_conflicts, comments, blockers,
-    bugs, templates, analytics, dashboard, bin, users, activity,
+    bugs, templates, analytics, dashboard, issues, bin, users, activity,
     alerts, export, auth, qa_tickets, agent_guide, sync_status,
 )
 
@@ -40,7 +40,7 @@ async def integrity_error_handler(request, exc):
 for router_module in (
     projects, workstreams, tasks, dependencies, time_tracking,
     attachments, recurring, sync_conflicts, comments, blockers,
-    bugs, templates, analytics, dashboard, bin, users, activity,
+    bugs, templates, analytics, dashboard, issues, bin, users, activity,
     alerts, export, auth, qa_tickets, agent_guide, sync_status,
 ):
     app.include_router(router_module.router)
@@ -59,6 +59,11 @@ async def bugs_page():
 @app.get("/analytics", response_class=HTMLResponse)
 async def analytics_page():
     return FileResponse(Path(__file__).parent / "static" / "analytics.html")
+
+
+@app.get("/issues", response_class=HTMLResponse)
+async def issues_page():
+    return FileResponse(Path(__file__).parent / "static" / "issues.html")
 
 
 @app.get("/promo", response_class=HTMLResponse)

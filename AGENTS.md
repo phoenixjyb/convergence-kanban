@@ -1,8 +1,10 @@
 # ConvergenceKanban — Agent Instructions (Codex / Cursor / Aider / etc.)
 
-This file is auto-read by Claude Code when you open this repo. It applies to
-the **kanban service itself**, not to projects that consume the kanban as
-their own AI-agent backend.
+This guide applies to the **kanban service itself**. Projects consuming the
+kanban API use its integration guide for the specific operation.
+
+中文说明：本文件只约束 ConvergenceKanban 服务本身的开发；其他项目中的 Agent
+如果要使用这个 Kanban，应拉取实时集成指南。
 
 If you're an AI agent in *another* repo and want to interact with this
 kanban (file bugs, submit QA tickets, etc.), fetch the live integration
@@ -61,8 +63,14 @@ docker compose up -d
 
 ```bash
 pip install -r requirements-dev.txt
-pytest tests/ -x -q        # ~220 tests; should pass under 5 seconds
+pytest tests/ -x -q        # full local suite when the change warrants it
 ```
+
+Use affected tests for a focused code change; broaden for shared database or
+API contracts. Documentation-only edits need content/link checks. Before local
+service/Compose runs, select disposable data and disable external sync/notification
+credentials. Live database changes, Feishu calls and deployment require authority
+for that operation. Never execute the setup commands merely to review this guide.
 
 ## Rules
 
@@ -71,8 +79,18 @@ pytest tests/ -x -q        # ~220 tests; should pass under 5 seconds
 - Route modules in `routes/` import from `db`, `models`, `helpers` only — no cross-route imports.
 - All timestamps use UTC+8 (Asia/Shanghai) by default — see `helpers.now_iso()`. Change `TZ` in `helpers.py` for other deployments.
 - Soft-delete pattern: `deleted_at` timestamp instead of hard delete. Cascades: deleting a project cascades to workstreams → tasks, blockers, recurring_tasks. Restore matches by timestamp.
+- Workstream status and progress are derived from all active tasks, including subtasks. Do not set workstream status manually.
+- `/issues` is an independent cross-team issues register. Bots may submit/update issues, but only humans close/archive/restore. Feishu issues sync uses acknowledged field snapshots and explicit archival; see `docs/ISSUES_WORKFLOW.md`.
 - Bot governance — users have `role` (`human` / `bot`). Unknown actors are treated as bots. Bots cannot mark tasks `done` / `abandoned`, delete projects/workstreams/tasks/bugs, create projects/workstreams, change workstream priorities, or change user roles. They submit `in_review` for human approval. Bug creation: bots are silently coerced to `source='agent'` (goes to a separate bug table from `source='manual'`). Bots can modify any bug regardless of source.
 - Route order: literal routes (`/projects/reorder`) must be registered before parameterized (`/projects/{pid}`).
+
+中文规则摘要：
+
+- 不提交 `.env*` 或 `data/`，凭据和数据库都属于部署状态。
+- Bot 不能直接把任务设为 `done` / `abandoned`，完成后进入 `in_review`。
+- Workstream 状态和进度由其全部有效任务（含子任务）自动计算，不要手工修改。
+- Bot 新建缺陷进入 `source='agent'` 表；QA 手工缺陷可以被 Bot 修改修复信息。
+- 字面量路由要先于参数路由注册。
 
 ## Bug status flow
 
@@ -83,6 +101,10 @@ pytest tests/ -x -q        # ~220 tests; should pass under 5 seconds
 
 When moving a bug to `fix_complete`/`to_verify`/`resolved`, also populate the fix metadata (`fix_method`, `fix_version`, `fix_date`) in the same call.
 
+中文：MR/commit 级修复默认到 `fix_complete`；进入正式验证构建后才到
+`to_verify`。进入 `fix_complete` / `to_verify` / `resolved` 时必须同时填写
+`fix_method`、`fix_version`、`fix_date`。
+
 ## Display IDs
 
 Human-readable bug IDs use `BUG-YYMMDD-NNN` (manual / QA) or `RD-YYMMDD-NNN` (agent). NNN resets daily per prefix.
@@ -91,6 +113,9 @@ Human-readable bug IDs use `BUG-YYMMDD-NNN` (manual / QA) or `RD-YYMMDD-NNN` (ag
 
 All Feishu features are opt-in via env vars (see `.env.example` + `docs/SETUP.md`). If `FEISHU_APP_ID` is blank, the kanban runs standalone — no sync, no chat bot, no wiki tickets. Everything still works via the REST API and web UI.
 
+中文：飞书能力都是可选配置。QA ticket 统一通过 Kanban API 创建，不使用个人飞书
+机器人 token；Kanban 后端使用部署配置中的飞书应用/机器人创建 wiki 页面。
+
 ## See also
 
 - `docs/AGENT_INSTRUCTIONS.md` — full integration guide for AI agents in **other** repos that want to use this kanban as their backend
@@ -98,3 +123,7 @@ All Feishu features are opt-in via env vars (see `.env.example` + `docs/SETUP.md
 - `docs/AGENT_ARCHITECTURE_zh.md` — Chinese architecture explainer for team members deploying this
 - `docs/SETUP.md` — full Feishu app setup walkthrough (scopes, tokens, wiki sub-pages)
 - `CONTRIBUTING.md` — how to contribute
+
+## Codex collaboration
+
+Astra owns Kanban ambiguity, API and governance contracts, authority, review and integration. Prefer Luna for useful independent slices when the model and delegation are available; honor explicit model choices and keep small tasks with the owner. Luna may perform a bounded implementation, discovery, documentation update or check with exact paths and a returned evidence record. Suitable slices include tracing route registration order, updating an agent-guide document, running affected route/model tests, or checking bilingual wording and links. Keep one writer per artifact and preserve `.env*` and `data/`. Existing project constraints and authorization requirements still apply.

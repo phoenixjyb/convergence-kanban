@@ -113,6 +113,16 @@ admin needs to approve before the scope is actually active.
 
 ### 3.3 Set up the chat bot (optional)
 
+Group commands require an explicit mention of this bot and a recognized
+command. `@all`, ordinary messages, and unknown commands are ignored. The bot
+resolves its own Feishu identity at startup; if that lookup fails, group command
+handling stays disabled until a successful restart. Direct messages still accept
+recognized commands without a mention.
+
+群聊只处理明确 @此机器人的已知命令，忽略 @所有人、普通消息和未知命令。
+启动时会获取机器人身份；获取失败时暂停群命令处理，成功重启后恢复。
+私聊仍可直接使用已知命令。
+
 In the app config:
 1. **Features → Bot** — enable bot capability, give it a display name and
    avatar

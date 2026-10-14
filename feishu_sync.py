@@ -24,6 +24,8 @@ import urllib.request
 import urllib.error
 from datetime import datetime, timedelta, timezone
 
+from feishu_issues import sync_issues
+
 # Project-wide timezone: Asia/Shanghai (UTC+8)
 TZ = timezone(timedelta(hours=8))
 from pathlib import Path
@@ -518,7 +520,7 @@ def _project_status(db, pid):
         ws_ids
     ).fetchall()
     total_tasks = len(task_rows)
-    done_tasks = sum(1 for t in task_rows if t["status"] in ("done", "in_review"))
+    done_tasks = sum(1 for t in task_rows if t["status"] in ("done", "abandoned"))
 
     ws_total = len(ws_rows)
     ws_done = sum(1 for r in ws_rows if r["status"] in ("done", "stable"))
@@ -1264,6 +1266,18 @@ def sync_bugs_v2(db, proj_record_map, table_key="bugs_table",
     VALID_STATUSES = ("open", "investigating", "fixing", "fix_complete", "to_verify", "resolved", "closed", "wontfix")
     VALID_SEVS = ("critical", "high", "medium", "low")
 
+    def _is_legacy_display_id(remote_id, local_id):
+        """True for old BUG-MMDD-NNN/RD-MMDD-NNN values superseded by YYMMDD."""
+        remote_parts = (remote_id or "").split("-")
+        local_parts = (local_id or "").split("-")
+        if len(remote_parts) != 3 or len(local_parts) != 3:
+            return False
+        if remote_parts[0] != local_parts[0]:
+            return False
+        if remote_parts[2] != local_parts[2]:
+            return False
+        return len(remote_parts[1]) == 4 and len(local_parts[1]) == 6 and local_parts[1].endswith(remote_parts[1])
+
     # Feature (功能) → project_id auto-mapping.
     # Loaded from config/feature_to_project.json if present; otherwise empty
     # (bugs without a project_id stay unmapped). See docs/SETUP.md.
@@ -1426,6 +1440,22 @@ def sync_bugs_v2(db, proj_record_map, table_key="bugs_table",
             remote = remote_by_kid[kid]
             rf = remote.get("fields", {})
             remote_ts = _text(rf.get("updated_at", ""))
+            remote_display_id = _text(rf.get("Bug ID", ""))
+
+            # Older synced Feishu rows can have kanban_id populated while the
+            # generated human-facing Bug ID column is still blank, or can retain
+            # the pre-2026-05-09 MMDD display format. The normal comparison
+            # below intentionally ignores display_id, so backfill it explicitly
+            # without waiting for another field to change.
+            if local["display_id"] and (
+                not remote_display_id
+                or _is_legacy_display_id(remote_display_id, local["display_id"])
+            ):
+                update_record(bugs_tid, remote["record_id"], {
+                    "Bug ID": local["display_id"],
+                    "updated_at": now_iso(),
+                })
+                pushed += 1
 
             # ── Build comparison dicts ────────────────────────────
             # Extract person fields
@@ -2086,6 +2116,10 @@ def sync_once():
         sync_bugs_v2(db, proj_record_map)
         sync_bugs_v2(db, proj_record_map, table_key="rd_bugs_table",
                      source_filter="agent", state_suffix="_rd")
+
+        issue_stats = sync_issues(db, sys.modules[__name__])
+        if sum(issue_stats.values()):
+            all_stats.append("Issues: " + ", ".join(f"{v} {k}" for k, v in issue_stats.items() if v))
 
         # Per-project table sync (bi-directional)
         project_tables = _state.get("project_tables", {})

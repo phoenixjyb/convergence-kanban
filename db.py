@@ -14,6 +14,67 @@ UPLOAD_DIR = DATA_DIR / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024  # 20MB
 
+TASK_STATUSES = ("todo", "doing", "in_review", "done", "blocked", "abandoned")
+
+
+def derive_workstream_state(statuses) -> dict:
+    """Derive workstream status and progress from its active task statuses."""
+    counts = {status: 0 for status in TASK_STATUSES}
+    for status in statuses:
+        counts[status if status in counts else "todo"] += 1
+
+    total = sum(counts.values())
+    completed = counts["done"] + counts["abandoned"]
+    unfinished = total - completed
+
+    if total == 0:
+        status = "planned"
+    elif unfinished == 0:
+        status = "done"
+    elif counts["blocked"]:
+        status = "blocked"
+    elif counts["in_review"] == unfinished:
+        status = "review"
+    elif counts["doing"] or counts["in_review"] or completed:
+        status = "in-progress"
+    else:
+        status = "planned"
+
+    return {
+        "status": status,
+        "status_source": "tasks",
+        "total": total,
+        "done": completed,
+        "todo": counts["todo"],
+        "doing": counts["doing"],
+        "in_review": counts["in_review"],
+        "blocked": counts["blocked"],
+        "abandoned": counts["abandoned"],
+        "pct": int(completed / total * 100) if total else 0,
+    }
+
+
+def _derived_workstream_update_sql(workstream_ref: str) -> str:
+    """Build the trigger statement that persists task-derived workstream state."""
+    active = (
+        "SELECT status FROM tasks "
+        f"WHERE workstream_id={workstream_ref} AND deleted_at IS NULL"
+    )
+    return f"""
+        UPDATE workstreams
+        SET status = CASE
+                WHEN NOT EXISTS ({active}) THEN 'planned'
+                WHEN NOT EXISTS ({active} AND status NOT IN ('done','abandoned')) THEN 'done'
+                WHEN EXISTS ({active} AND status='blocked') THEN 'blocked'
+                WHEN (SELECT count(*) FROM ({active}) WHERE status NOT IN ('done','abandoned')) =
+                     (SELECT count(*) FROM ({active}) WHERE status='in_review') THEN 'review'
+                WHEN EXISTS ({active} AND status IN ('doing','in_review','done','abandoned')) THEN 'in-progress'
+                ELSE 'planned'
+            END,
+            updated_at = strftime('%Y-%m-%d %H:%M:%S', 'now', '+8 hours')
+        WHERE id={workstream_ref} AND deleted_at IS NULL;
+    """
+
 
 @contextmanager
 def get_db():
@@ -282,6 +343,45 @@ def init_db():
         )""")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_conflict_entity ON sync_conflicts(entity_type, entity_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_conflict_unresolved ON sync_conflicts(resolved)")
+
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS issues (
+                id TEXT PRIMARY KEY,
+                display_id TEXT NOT NULL UNIQUE,
+                title TEXT NOT NULL,
+                introduction TEXT NOT NULL DEFAULT '',
+                content TEXT NOT NULL,
+                raised_by TEXT NOT NULL DEFAULT '',
+                raised_date TEXT NOT NULL,
+                category TEXT NOT NULL DEFAULT 'other' CHECK(category IN ('hardware','software','product_experience','process','delivery','operations','other')),
+                priority TEXT NOT NULL DEFAULT 'medium' CHECK(priority IN ('critical','high','medium','low')),
+                rank INTEGER NOT NULL DEFAULT 0 CHECK(rank >= 0),
+                owner TEXT NOT NULL DEFAULT '',
+                due_date TEXT,
+                status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','triaged','in_progress','blocked','pending_review','closed')),
+                resolution_criteria TEXT NOT NULL DEFAULT '',
+                resolution TEXT NOT NULL DEFAULT '',
+                project_id TEXT REFERENCES projects(id),
+                workstream_id TEXT REFERENCES workstreams(id),
+                task_ids TEXT NOT NULL DEFAULT '[]',
+                bug_ids TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                deleted_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_issues_status ON issues(status, deleted_at);
+        """)
+
+        # Extend the existing conflict register without losing old resolutions.
+        conflict_sql = conn.execute("SELECT sql FROM sqlite_master WHERE name='sync_conflicts'").fetchone()["sql"]
+        if "'issue'" not in conflict_sql:
+            conn.execute("ALTER TABLE sync_conflicts RENAME TO sync_conflicts_old")
+            conn.execute(conflict_sql.replace("('task','blocker','bug')", "('task','blocker','bug','issue')"))
+            conn.execute("INSERT INTO sync_conflicts SELECT * FROM sync_conflicts_old")
+            conn.execute("DROP TABLE sync_conflicts_old")
+            conn.execute("CREATE INDEX idx_conflict_entity ON sync_conflicts(entity_type, entity_id)")
+            conn.execute("CREATE INDEX idx_conflict_unresolved ON sync_conflicts(resolved)")
+
         # Migration: keep tasks status CHECK constraint in sync with latest valid set.
         # SQLite can't ALTER CHECK constraints, so probe-and-recreate.
         # Probe with the most recently added status — this catches DBs missing any of: in_review, abandoned.
@@ -456,3 +556,45 @@ def init_db():
             conn.execute("CREATE INDEX IF NOT EXISTS idx_bugs_status ON bugs(status)")
             conn.execute("PRAGMA foreign_keys=ON")
             conn.commit()
+
+        # Workstream status is derived from active tasks. Install these after
+        # table-rebuild migrations so every task mutation path stays covered.
+        for trigger in (
+            "tasks_derive_workstream_after_insert",
+            "tasks_derive_workstream_after_update",
+            "tasks_derive_old_workstream_after_move",
+            "tasks_derive_workstream_after_delete",
+        ):
+            conn.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+        conn.executescript(f"""
+            CREATE TRIGGER tasks_derive_workstream_after_insert
+            AFTER INSERT ON tasks
+            BEGIN
+                {_derived_workstream_update_sql('NEW.workstream_id')}
+            END;
+
+            CREATE TRIGGER tasks_derive_workstream_after_update
+            AFTER UPDATE OF status, workstream_id, deleted_at ON tasks
+            BEGIN
+                {_derived_workstream_update_sql('NEW.workstream_id')}
+            END;
+
+            CREATE TRIGGER tasks_derive_old_workstream_after_move
+            AFTER UPDATE OF workstream_id ON tasks
+            WHEN OLD.workstream_id != NEW.workstream_id
+            BEGIN
+                {_derived_workstream_update_sql('OLD.workstream_id')}
+            END;
+
+            CREATE TRIGGER tasks_derive_workstream_after_delete
+            AFTER DELETE ON tasks
+            BEGIN
+                {_derived_workstream_update_sql('OLD.workstream_id')}
+            END;
+        """)
+
+        # Backfill workstreams created before derived status was introduced.
+        for row in conn.execute(
+            "SELECT id FROM workstreams WHERE deleted_at IS NULL"
+        ).fetchall():
+            conn.executescript(_derived_workstream_update_sql(repr(row["id"])))
