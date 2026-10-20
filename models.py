@@ -1,11 +1,55 @@
 """Pydantic models for request validation."""
 
+from datetime import date
 from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
 
-VALID_TASK_STATUSES = ("todo", "doing", "in_review", "done", "blocked")
+VALID_TASK_STATUSES = ("todo", "doing", "in_review", "done", "blocked", "abandoned")
+
+IssueCategory = Literal["hardware", "software", "product_experience", "process", "delivery", "operations", "other"]
+IssueStatus = Literal["open", "triaged", "in_progress", "blocked", "pending_review", "closed"]
+
+
+class IssueCreate(BaseModel):
+    title: str = Field(min_length=1, max_length=500)
+    introduction: str = Field(default="", max_length=5000)
+    content: str = Field(min_length=1, max_length=10000)
+    raised_by: str = Field(default="", max_length=100)
+    raised_date: date | None = None
+    category: IssueCategory = "other"
+    priority: Literal["critical", "high", "medium", "low"] = "medium"
+    rank: int = Field(default=0, ge=0, le=999999)
+    owner: str = Field(default="", max_length=100)
+    due_date: date | None = None
+    status: IssueStatus = "open"
+    resolution_criteria: str = Field(default="", max_length=5000)
+    resolution: str = Field(default="", max_length=5000)
+    project_id: str | None = None
+    workstream_id: str | None = None
+    task_ids: List[str] = Field(default_factory=list, max_length=100)
+    bug_ids: List[str] = Field(default_factory=list, max_length=100)
+
+
+class IssueUpdate(BaseModel):
+    title: str | None = Field(default=None, min_length=1, max_length=500)
+    introduction: str | None = Field(default=None, max_length=5000)
+    content: str | None = Field(default=None, min_length=1, max_length=10000)
+    raised_by: str | None = Field(default=None, max_length=100)
+    raised_date: date | None = None
+    category: IssueCategory | None = None
+    priority: Literal["critical", "high", "medium", "low"] | None = None
+    rank: int | None = Field(default=None, ge=0, le=999999)
+    owner: str | None = Field(default=None, max_length=100)
+    due_date: date | None = None
+    status: IssueStatus | None = None
+    resolution_criteria: str | None = Field(default=None, max_length=5000)
+    resolution: str | None = Field(default=None, max_length=5000)
+    project_id: str | None = None
+    workstream_id: str | None = None
+    task_ids: List[str] | None = Field(default=None, max_length=100)
+    bug_ids: List[str] | None = Field(default=None, max_length=100)
 
 
 class ProjectCreate(BaseModel):
@@ -28,7 +72,6 @@ class WorkstreamCreate(BaseModel):
     title_zh: str = Field(default="", max_length=500)
     owner: str = Field(default="", max_length=100)
     priority: Literal["critical", "high", "medium", "low"] = "medium"
-    status: Literal["planned", "in-progress", "blocked", "review", "done", "stable"] = "planned"
     summary_en: str = Field(default="", max_length=5000)
     summary_zh: str = Field(default="", max_length=5000)
 
@@ -87,7 +130,7 @@ class BugCreate(BaseModel):
     title: str = Field(min_length=1, max_length=500)
     description: str = Field(default="", max_length=5000)
     severity: Literal["critical", "high", "medium", "low"] = "medium"
-    status: Literal["open", "investigating", "fixing", "fix_complete", "to_verify", "resolved", "closed", "wontfix"] = "open"
+    status: Literal["open", "hold", "investigating", "fixing", "fix_complete", "to_verify", "resolved", "closed", "wontfix"] = "open"
     reporter: str = Field(default="", max_length=100)
     assignee: str = Field(default="", max_length=100)
     project_id: Optional[str] = None
@@ -112,7 +155,7 @@ class BugUpdate(BaseModel):
     title: Optional[str] = Field(default=None, min_length=1, max_length=500)
     description: Optional[str] = Field(default=None, max_length=5000)
     severity: Optional[Literal["critical", "high", "medium", "low"]] = None
-    status: Optional[Literal["open", "investigating", "fixing", "fix_complete", "to_verify", "resolved", "closed", "wontfix"]] = None
+    status: Optional[Literal["open", "hold", "investigating", "fixing", "fix_complete", "to_verify", "resolved", "closed", "wontfix"]] = None
     assignee: Optional[str] = Field(default=None, max_length=100)
     project_id: Optional[str] = None
     workstream_id: Optional[str] = None

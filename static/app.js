@@ -723,7 +723,7 @@ function renderWorkstreamRow(ws) {
     <td data-label="${t('title')}"><strong>${tField(ws, 'title')}</strong></td>
     <td data-label="${t('owner')}" style="color:var(--text2)">${esc(ws.owner) || '—'}</td>
     <td data-label="${t('priority')}"><span class="priority-${ws.priority}">${t(ws.priority)}</span></td>
-    <td data-label="${t('status')}"><span class="badge badge-${ws.status}">${t(ws.status)}</span></td>
+    <td data-label="${t('status')}"><span class="badge badge-${ws.status}" title="${t('statusDerivedFromTasks')}">${t(ws.status)}</span></td>
     <td data-label="${t('progress')}">
       ${total > 0 ? `${done}/${total}
         <div class="progress-bar"><div class="progress-fill" style="width:${pct}%"></div></div>` : '—'}
@@ -1006,16 +1006,6 @@ function showAddWorkstream(projectId) {
           <option value="low">${t('low')}</option>
         </select>
       </div>
-      <div class="form-group"><label>${t('status')}</label>
-        <select id="wStatus">
-          <option value="planned">${t('planned')}</option>
-          <option value="in-progress">${t('in-progress')}</option>
-          <option value="blocked">${t('blocked')}</option>
-          <option value="review">${t('review')}</option>
-          <option value="done">${t('done')}</option>
-          <option value="stable">${t('stable')}</option>
-        </select>
-      </div>
     </div>
     <div class="form-group"><label>${t('summaryEn')}</label><textarea id="wSummaryEn" rows="3"></textarea></div>
     <div class="form-group"><label>${t('summaryZh')}</label><textarea id="wSummaryZh" rows="2"></textarea></div>
@@ -1033,7 +1023,6 @@ async function saveWorkstream(projectId) {
     title_zh: document.getElementById('wTitleZh').value,
     owner: document.getElementById('wOwner').value,
     priority: document.getElementById('wPriority').value,
-    status: document.getElementById('wStatus').value,
     summary_en: document.getElementById('wSummaryEn').value,
     summary_zh: document.getElementById('wSummaryZh').value,
   });
@@ -1050,8 +1039,6 @@ async function showWorkstreamDetail(wid) {
   }
   if (!ws) return;
 
-  const statusOptions = ['planned','in-progress','blocked','review','done','stable']
-    .map(s => `<option value="${s}" ${ws.status===s?'selected':''}>${t(s)}</option>`).join('');
   const priorityOptions = ['critical','high','medium','low']
     .map(p => `<option value="${p}" ${ws.priority===p?'selected':''}>${t(p)}</option>`).join('');
 
@@ -1059,7 +1046,7 @@ async function showWorkstreamDetail(wid) {
     <div style="display:flex;justify-content:space-between;align-items:start;margin-bottom:16px">
       <h2>${tField(ws, 'title')}</h2>
       <div style="display:flex;gap:6px">
-        <select class="task-status-select" onchange="quickUpdateWs('${wid}','status',this.value)">${statusOptions}</select>
+        <span class="badge badge-${ws.status}" title="${t('statusDerivedFromTasks')}">${t(ws.status)} · ${t('automatic')}</span>
         <select class="task-status-select" onchange="quickUpdateWs('${wid}','priority',this.value)">${priorityOptions}</select>
         <button class="btn btn-sm" onclick="showEditWorkstream('${wid}')">${t('edit')}</button>
       </div>
@@ -2520,17 +2507,43 @@ function renderSyncStatus(status) {
   const badgeClass = status.enabled && !stale ? 'sync-fresh' : 'sync-stale';
   const badgeText = status.enabled ? (stale ? t('syncStale') : t('syncFresh')) : t('syncDisabled');
   const tables = status.tables || {};
+  const bugHygiene = status.bug_hygiene || {};
   const tableRows = [
     ['projects', t('syncProjects')],
     ['tasks', t('syncTasks')],
     ['qa_bugs', t('syncQaBugs')],
     ['rd_bugs', t('syncRdBugs')],
+    ['issues', t('syncIssues')],
   ].map(([key, label]) => {
     const info = tables[key] || {};
     return `<div class="sync-status-row">
       <span>${label}</span>
       <strong>${info.record_count || 0}</strong>
       <span class="mono">${esc((info.latest_sync_at || '').substring(5, 16) || '—')}</span>
+    </div>`;
+  }).join('');
+  const issueRows = [
+    ['qa_bugs', t('syncQaBugs')],
+    ['rd_bugs', t('syncRdBugs')],
+  ].map(([key, label]) => {
+    const tableInfo = tables[key] || {};
+    const hygiene = bugHygiene[key] || {};
+    const stateMapDelta = tableInfo.state_map_delta || 0;
+    const issueCount = (hygiene.missing_display_id || 0)
+      + (hygiene.legacy_display_id || 0)
+      + (hygiene.fixed_missing_metadata || 0);
+    const rowClass = issueCount ? 'sync-issue-row has-issues' : 'sync-issue-row';
+    return `<div class="${rowClass}">
+      <div class="sync-issue-title">
+        <strong>${label}</strong>
+        <span>${t('syncLocalActive')}: ${hygiene.total || tableInfo.local_active_count || 0}</span>
+      </div>
+      <div class="sync-issue-metrics">
+        <span>${t('syncStateMapDelta')}: <strong>${stateMapDelta}</strong></span>
+        <span>${t('syncMissingId')}: <strong>${hygiene.missing_display_id || 0}</strong></span>
+        <span>${t('syncLegacyId')}: <strong>${hygiene.legacy_display_id || 0}</strong></span>
+        <span>${t('syncMissingFixMeta')}: <strong>${hygiene.fixed_missing_metadata || 0}</strong></span>
+      </div>
     </div>`;
   }).join('');
   return `
@@ -2544,6 +2557,8 @@ function renderSyncStatus(status) {
         · ${t('syncUnresolved')}: <strong>${status.unresolved_conflicts || 0}</strong>
       </div>
       <div class="sync-status-grid">${tableRows}</div>
+      ${tables.issues?.configured ? `<div class="sync-status-meta">${t('syncIssues')}: ${t('syncIssueErrors')} <strong>${tables.issues.errors || 0}</strong> · ${t('syncNeedsDetails')}: <strong>${tables.issues.needs_details || 0}</strong> · ${t('syncUnresolved')}: <strong>${tables.issues.conflicts || 0}</strong></div>` : ''}
+      <div class="sync-issue-grid">${issueRows}</div>
     </div>`;
 }
 

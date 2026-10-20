@@ -81,7 +81,7 @@ def _safe_load_state(path: Path) -> dict[str, Any]:
 def _db_counts() -> dict[str, int]:
     with get_db() as conn:
         counts = {}
-        for table in ("projects", "workstreams", "tasks", "bugs", "sync_conflicts"):
+        for table in ("projects", "workstreams", "tasks", "bugs", "issues", "sync_conflicts"):
             exists = conn.execute(
                 "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
                 (table,),
@@ -97,6 +97,87 @@ def _db_counts() -> dict[str, int]:
         else:
             counts["unresolved_conflicts"] = 0
         return counts
+
+
+def _is_legacy_display_id(display_id: str) -> bool:
+    parts = (display_id or "").split("-")
+    if len(parts) != 3:
+        return False
+    return (
+        parts[0] in {"BUG", "RD"}
+        and len(parts[1]) == 4
+        and parts[1].isdigit()
+        and len(parts[2]) == 3
+        and parts[2].isdigit()
+    )
+
+
+def _bug_hygiene() -> dict[str, Any]:
+    fixed_statuses = {"fix_complete", "to_verify", "resolved", "closed"}
+    buckets = {
+        "qa_bugs": {"source": "manual", "total": 0, "missing_display_id": 0, "legacy_display_id": 0, "fixed_missing_metadata": 0},
+        "rd_bugs": {"source": "agent", "total": 0, "missing_display_id": 0, "legacy_display_id": 0, "fixed_missing_metadata": 0},
+    }
+    samples = {
+        "missing_display_id": [],
+        "legacy_display_id": [],
+        "fixed_missing_metadata": [],
+    }
+
+    with get_db() as conn:
+        exists = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='bugs'",
+        ).fetchone()
+        if not exists:
+            return {
+                key: {k: v for k, v in bucket.items() if k != "source"}
+                for key, bucket in buckets.items()
+            } | {"samples": samples}
+
+        rows = conn.execute(
+            """
+            SELECT id, COALESCE(source,'manual') source, display_id, status,
+                   fix_method, fix_version, fix_date
+            FROM bugs
+            WHERE deleted_at IS NULL
+            """
+        ).fetchall()
+
+    for row in rows:
+        key = "rd_bugs" if row["source"] == "agent" else "qa_bugs"
+        bucket = buckets[key]
+        display_id = row["display_id"] or ""
+        bucket["total"] += 1
+
+        if not display_id:
+            bucket["missing_display_id"] += 1
+            if len(samples["missing_display_id"]) < 5:
+                samples["missing_display_id"].append({"id": row["id"], "source": row["source"], "status": row["status"]})
+        elif _is_legacy_display_id(display_id):
+            bucket["legacy_display_id"] += 1
+            if len(samples["legacy_display_id"]) < 5:
+                samples["legacy_display_id"].append({"id": row["id"], "display_id": display_id, "status": row["status"]})
+
+        if row["status"] in fixed_statuses:
+            missing = [
+                field for field in ("fix_method", "fix_version", "fix_date")
+                if not (row[field] or "").strip()
+            ]
+            if missing:
+                bucket["fixed_missing_metadata"] += 1
+                if len(samples["fixed_missing_metadata"]) < 5:
+                    samples["fixed_missing_metadata"].append({
+                        "id": row["id"],
+                        "display_id": display_id,
+                        "status": row["status"],
+                        "missing": missing,
+                    })
+
+    return {
+        "qa_bugs": {k: v for k, v in buckets["qa_bugs"].items() if k != "source"},
+        "rd_bugs": {k: v for k, v in buckets["rd_bugs"].items() if k != "source"},
+        "samples": samples,
+    }
 
 
 def _table_summary(state: dict[str, Any], state_mtime: str) -> dict[str, dict[str, Any]]:
@@ -142,6 +223,7 @@ def sync_status():
     """Return sanitized sync health; never exposes credentials or raw state."""
     state_path = _choose_state_file()
     counts = _db_counts()
+    bug_hygiene = _bug_hygiene()
     if not state_path:
         configured = bool(os.environ.get("FEISHU_APP_ID") and os.environ.get("FEISHU_APP_SECRET"))
         return {
@@ -152,19 +234,44 @@ def sync_status():
             "state_staleness_seconds": None,
             "tables": {},
             "db_counts": counts,
+            "bug_hygiene": bug_hygiene,
             "unresolved_conflicts": counts["unresolved_conflicts"],
         }
 
     state = _safe_load_state(state_path)
     mtime = datetime.fromtimestamp(state_path.stat().st_mtime, tz=TZ).strftime("%Y-%m-%d %H:%M:%S")
-    has_tables = any(state.get(k) for k in ("projects_table", "tasks_table", "bugs_table", "rd_bugs_table"))
+    has_tables = any(state.get(k) for k in ("projects_table", "tasks_table", "bugs_table", "rd_bugs_table", "issues_table"))
+    tables = _table_summary(state, mtime)
+    issue_cycle = state.get("issues_last_cycle", {})
+    issue_cycle = issue_cycle if isinstance(issue_cycle, dict) else {}
+    tables["issues"] = {
+        "configured": bool(state.get("issues_table")),
+        "record_count": _count_mapping(state.get("issues_baselines")),
+        "latest_sync_at": issue_cycle.get("at", ""),
+        "staleness_seconds": _age_seconds(issue_cycle.get("at", "")),
+        "errors": issue_cycle.get("errors", 0),
+        "conflicts": issue_cycle.get("conflicts", 0),
+        "needs_details": issue_cycle.get("needs_details", 0),
+        "blank_ignored": issue_cycle.get("blank_ignored", 0),
+        "pending_details": [
+            {"title": str(item.get("title", ""))[:200],
+             "missing_fields": [field for field in item.get("missing_fields", [])
+                                if field in ("Title", "Issue Content")]}
+            for item in (issue_cycle.get("pending_details") or [])[:10]
+            if isinstance(item, dict) and isinstance(item.get("missing_fields"), list)
+        ] if isinstance(issue_cycle.get("pending_details", []), list) else [],
+    }
+    for key in ("qa_bugs", "rd_bugs"):
+        tables[key]["local_active_count"] = bug_hygiene[key]["total"]
+        tables[key]["state_map_delta"] = tables[key]["record_count"] - bug_hygiene[key]["total"]
     return {
         "enabled": bool(has_tables),
         "reason": "" if has_tables else "Sync state file exists but no Feishu tables are configured.",
         "state_file": state_path.name,
         "state_mtime": mtime,
         "state_staleness_seconds": _age_seconds(mtime),
-        "tables": _table_summary(state, mtime),
+        "tables": tables,
         "db_counts": counts,
+        "bug_hygiene": bug_hygiene,
         "unresolved_conflicts": counts["unresolved_conflicts"],
     }

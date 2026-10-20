@@ -1,0 +1,119 @@
+.issues-app { min-height: 100vh; }
+.issues-app .header-left { gap: 12px; }
+.issues-app .header h1 { font-size: 1.15rem; }
+.issue-count { min-width: 28px; padding: 2px 7px; border: 1px solid var(--bg4); border-radius: 4px; color: var(--text2); font: 600 .72rem var(--font-mono); text-align: center; }
+.issues-toolbar { display: flex; align-items: center; gap: 8px; padding: 12px 24px; border-bottom: 1px solid rgba(255,255,255,.06); background: var(--bg-deep); flex-wrap: wrap; }
+.issues-toolbar select, .search-box input { height: 34px; min-width: 132px; padding: 5px 9px; border: 1px solid var(--bg4); border-radius: 4px; background: var(--bg2); color: var(--text); font: 400 .82rem var(--font-body); }
+.issues-toolbar #attentionFilter { min-width: 154px; }
+.issues-toolbar select:focus, .search-box input:focus, .issue-form input:focus, .issue-form select:focus, .issue-form textarea:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
+.search-box { position: relative; display: flex; align-items: center; flex: 1 1 240px; max-width: 420px; color: var(--text3); }
+.search-box > span { position: absolute; left: 10px; font-size: 1.15rem; pointer-events: none; }
+.search-box input { width: 100%; padding-left: 30px; }
+.deleted-toggle { display: flex; align-items: center; gap: 6px; padding: 0 4px; color: var(--text2); font-size: .8rem; white-space: nowrap; }
+.deleted-toggle input { accent-color: var(--accent); }
+.issues-table-wrap { overflow: auto; padding: 0 24px 30px; }
+.issues-table { width: 100%; min-width: 820px; border-collapse: collapse; text-align: left; }
+.issues-table th { position: sticky; top: 0; z-index: 1; padding: 10px 12px; border-bottom: 1px solid var(--bg4); background: var(--bg); color: var(--text3); font-size: .68rem; font-weight: 600; text-transform: uppercase; }
+.issues-table td { padding: 10px 12px; border-bottom: 1px solid rgba(255,255,255,.055); color: var(--text2); font-size: .82rem; }
+.issues-table .rank-col { width: 72px; text-align: center; }
+.issue-row { cursor: pointer; transition: background .12s ease; }
+.issue-row:hover, .issue-row:focus { outline: none; background: rgba(0,221,179,.055); }
+.issue-row.is-deleted { opacity: .62; }
+.rank-cell { text-align: center; font-family: var(--font-mono); }
+.rank-number { color: var(--accent); font-weight: 700; }
+.unranked { color: var(--text3); font-size: .7rem; }
+.issue-title-cell { min-width: 260px; }
+.issue-title-cell strong { display: block; color: var(--text); font-size: .87rem; font-weight: 600; }
+.issue-title-cell strong { overflow-wrap: anywhere; }
+.issue-id, .detail-kicker { display: block; color: var(--text3); font: 500 .68rem var(--font-mono); }
+.deleted-marker { margin-left: 8px; color: var(--red); font-size: .68rem; }
+.row-restore { margin: 3px 0 0 7px; padding: 1px 5px; border: 1px solid var(--bg4); border-radius: 3px; background: transparent; color: var(--text2); font: 500 .67rem var(--font-body); cursor: pointer; }
+.row-restore:hover { border-color: var(--accent-dim); color: var(--accent); }
+.priority-value, .status-value { display: inline-block; padding: 2px 6px; border: 1px solid var(--bg4); border-radius: 3px; color: var(--text2); font-size: .72rem; white-space: nowrap; }
+.priority-critical { color: var(--red); border-color: rgba(255,71,87,.35); }
+.priority-high { color: var(--orange); border-color: rgba(255,140,66,.32); }
+.priority-medium { color: var(--yellow); border-color: rgba(251,191,36,.3); }
+.priority-low { color: var(--text2); }
+.status-blocked { color: var(--red); }
+.status-in_progress { color: var(--blue); }
+.status-pending_review { color: var(--yellow); }
+.status-closed { color: var(--green); }
+.mono { font-family: var(--font-mono); font-size: .74rem !important; white-space: nowrap; }
+.table-empty { padding: 32px !important; text-align: center; color: var(--text3) !important; }
+.issues-message { margin: 10px 24px 0; padding: 8px 10px; border: 1px solid var(--bg4); border-radius: 4px; color: var(--text2); font-size: .82rem; }
+.error-message, .error-text { color: var(--red) !important; }
+.error-message { border-color: rgba(255,71,87,.35); background: rgba(255,71,87,.06); }
+.dialog-backdrop { position: fixed; inset: 0; z-index: 200; display: flex; justify-content: center; align-items: flex-start; overflow: auto; padding: 5vh 14px; background: rgba(0,0,0,.68); }
+.dialog-backdrop#userBackdrop { z-index: 210; }
+.issues-app .header h1 { letter-spacing: 0; }
+.dialog-backdrop[hidden] { display: none; }
+.issue-dialog, .user-dialog { width: min(820px, 100%); max-height: 90vh; overflow: auto; border: 1px solid var(--bg4); border-radius: 6px; background: var(--bg); box-shadow: var(--shadow-lg); }
+.user-dialog { width: min(460px, 100%); }
+.dialog-header { position: sticky; top: 0; z-index: 2; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--bg4); background: var(--bg); }
+.dialog-header h2 { margin: 0; overflow-wrap: anywhere; color: var(--text); font-size: 1rem; }
+.icon-btn { width: 30px; height: 30px; border: 1px solid var(--bg4); border-radius: 4px; background: transparent; color: var(--text2); font-size: 1.25rem; cursor: pointer; }
+.issue-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 14px; padding: 16px; }
+.form-field { display: flex; flex-direction: column; gap: 5px; min-width: 0; margin-bottom: 12px; color: var(--text2); font-size: .75rem; }
+.form-field input, .form-field select, .form-field textarea, .comment-form textarea { width: 100%; min-width: 0; padding: 7px 9px; border: 1px solid var(--bg4); border-radius: 4px; background: var(--bg2); color: var(--text); font: 400 .82rem var(--font-body); }
+.form-field textarea, .comment-form textarea { min-height: 68px; resize: vertical; }
+.form-field select[multiple] { min-height: 118px; }
+.field-wide, .form-note, .form-actions { grid-column: 1 / -1; }
+.form-note { margin: 0 0 10px; color: var(--yellow); font-size: .75rem; }
+.form-actions, .detail-actions { display: flex; justify-content: flex-end; gap: 8px; padding-top: 8px; }
+.issue-detail { padding: 16px; }
+.detail-meta { display: flex; gap: 7px; flex-wrap: wrap; margin: 8px 0 16px; }
+.detail-meta span { padding: 3px 7px; border: 1px solid var(--bg4); border-radius: 3px; color: var(--text2); font-size: .72rem; }
+.detail-field { margin-bottom: 12px; min-width: 0; }
+.detail-field > span { display: block; margin-bottom: 3px; color: var(--text3); font-size: .7rem; }
+.detail-field > div { color: var(--text); font-size: .84rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+.detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 0 16px; padding-top: 12px; border-top: 1px solid var(--bg4); }
+.comment-section { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--bg4); }
+.comment-section h3 { margin: 0 0 10px; color: var(--text); font-size: .88rem; }
+.comment-list { display: grid; gap: 8px; }
+.comment { padding: 8px 10px; border-left: 2px solid var(--accent-dim); background: var(--bg2); }
+.comment header { display: flex; justify-content: space-between; gap: 10px; color: var(--text3); font-size: .7rem; }
+.comment p { margin: 6px 0 0; color: var(--text); font-size: .82rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+.muted { color: var(--text3); font-size: .8rem; }
+.comment-form { display: flex; align-items: flex-end; gap: 8px; margin-top: 10px; }
+.comment-form textarea { min-height: 48px; }
+.danger-btn { color: var(--red) !important; }
+.user-options { display: grid; gap: 6px; padding: 14px; }
+.user-option { display: flex; justify-content: space-between; gap: 12px; padding: 9px 10px; border: 1px solid var(--bg4); border-radius: 4px; background: var(--bg2); color: var(--text); text-align: left; cursor: pointer; }
+.user-option:hover, .user-option.selected { border-color: var(--accent-dim); }
+.user-option span { color: var(--text3); font: .72rem var(--font-mono); }
+.user-dialog > .error-message { margin: 0 14px 14px; }
+:root.light .issues-toolbar { background: var(--bg2); }
+:root.light .issues-table th { background: var(--bg); }
+
+@media (max-width: 768px) {
+  .issues-app .header { align-items: flex-start; }
+  .issues-app .header-left { min-width: 0; }
+  .issues-app .header h1 { font-size: 1rem; }
+  .issues-app .header-actions { position: static; display: flex; flex-direction: row; flex-wrap: wrap; justify-content: flex-end; width: auto; min-width: 0; padding: 0; border: 0; box-shadow: none; background: transparent; }
+  .issues-app .header-actions .btn { width: auto; }
+  .issues-app .header { height: auto; min-height: 56px; flex-wrap: wrap; gap: 8px; padding: 12px; }
+  .issues-toolbar { padding: 10px 12px; gap: 7px; }
+  .search-box { flex-basis: 100%; max-width: none; }
+  .issues-toolbar select { flex: 1 1 42%; min-width: 0; }
+  .issues-table-wrap { overflow: visible; padding: 8px 10px 24px; }
+  .issues-table { display: block; min-width: 0; }
+  .issues-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0,0,0,0); }
+  .issues-table tbody { display: grid; gap: 7px; }
+  .issues-table tr.issue-row { display: grid; grid-template-columns: 42px minmax(0,1fr) auto; gap: 0 8px; padding: 8px 9px; border: 1px solid var(--bg4); border-radius: 4px; background: var(--bg2); }
+  .issues-table tr.issue-row td { padding: 3px 0; border: 0; font-size: .74rem; }
+  .issues-table tr.issue-row .rank-cell { grid-row: 1 / span 3; align-self: start; padding-top: 6px; }
+  .issues-table tr.issue-row .issue-title-cell { grid-column: 2 / 4; min-width: 0; }
+  .issues-table tr.issue-row .issue-title-cell strong { overflow-wrap: anywhere; }
+  .issues-table tr.issue-row td:nth-child(3), .issues-table tr.issue-row td:nth-child(6) { grid-column: 2; }
+  .issues-table tr.issue-row td:nth-child(4), .issues-table tr.issue-row td:nth-child(5), .issues-table tr.issue-row td:nth-child(7) { grid-column: 3; justify-self: end; }
+  .issues-table tr.issue-row td:nth-child(8) { display: none; }
+  .issues-table tr:not(.issue-row) td { display: table-cell; }
+  .issue-form, .detail-grid { grid-template-columns: 1fr; }
+  .field-wide, .form-note, .form-actions { grid-column: 1; }
+  .dialog-backdrop { padding: 2vh 8px; }
+  .issue-dialog, .user-dialog { max-height: 96vh; }
+  .comment-form { align-items: stretch; flex-direction: column; }
+}
+.issues-app #syncNotice {
+  overflow-wrap: anywhere;
+}

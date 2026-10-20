@@ -69,6 +69,68 @@ def test_dashboard_task_progress_pct(client, human_headers):
     assert proj["task_progress"]["pct"] == 100
 
 
+def test_workstream_status_and_progress_are_derived_from_all_tasks(client, human_headers):
+    pid = _make_project(client, human_headers, "DerivedWS")
+    wsid = _make_ws(client, human_headers, pid)
+
+    def workstream():
+        dash = client.get("/api/dashboard").json()
+        return next(w for p in dash if p["id"] == pid for w in p["workstreams"] if w["id"] == wsid)
+
+    assert workstream()["status"] == "planned"
+    t1 = _make_task(client, human_headers, wsid, "First")
+    t2 = _make_task(client, human_headers, wsid, "Second")
+    assert workstream()["status"] == "planned"
+
+    client.put(f"/api/tasks/{t1}", json={"status": "done"}, headers=human_headers)
+    ws = workstream()
+    assert ws["status"] == "in-progress"
+    assert ws["status_source"] == "tasks"
+    assert ws["task_stats"]["done"] == 1
+    assert ws["task_stats"]["total"] == 2
+    assert ws["task_stats"]["pct"] == 50
+
+    client.put(f"/api/tasks/{t2}", json={"status": "in_review"}, headers=human_headers)
+    assert workstream()["status"] == "review"
+
+    client.put(f"/api/tasks/{t2}", json={"status": "blocked"}, headers=human_headers)
+    assert workstream()["status"] == "blocked"
+
+    client.put(f"/api/tasks/{t2}", json={"status": "done"}, headers=human_headers)
+    ws = workstream()
+    assert ws["status"] == "done"
+    assert ws["task_stats"]["pct"] == 100
+
+
+def test_unfinished_subtask_prevents_workstream_completion(client, human_headers):
+    pid = _make_project(client, human_headers, "DerivedSubtasks")
+    wsid = _make_ws(client, human_headers, pid)
+    parent = _make_task(client, human_headers, wsid, "Parent", status="done")
+    _make_task(client, human_headers, wsid, "Child", parent_task_id=parent)
+
+    dash = client.get("/api/dashboard").json()
+    ws = next(w for p in dash if p["id"] == pid for w in p["workstreams"] if w["id"] == wsid)
+    assert ws["status"] == "in-progress"
+    assert ws["task_stats"]["total"] == 2
+    assert ws["task_stats"]["done"] == 1
+
+
+def test_database_trigger_rolls_up_external_task_status_change(client, human_headers):
+    """Feishu sync writes SQLite directly, so DB-level roll-up must cover it."""
+    from db import get_db
+
+    pid = _make_project(client, human_headers, "DerivedExternal")
+    wsid = _make_ws(client, human_headers, pid)
+    tid = _make_task(client, human_headers, wsid, "Synced task")
+
+    with get_db() as conn:
+        conn.execute("UPDATE tasks SET status='blocked' WHERE id=?", (tid,))
+        stored = conn.execute(
+            "SELECT status FROM workstreams WHERE id=?", (wsid,)
+        ).fetchone()["status"]
+    assert stored == "blocked"
+
+
 def test_project_crud(client, human_headers):
     # Create
     r = client.post("/api/projects", json={
@@ -1486,9 +1548,18 @@ def test_workstream_update(client, human_headers):
     pid = _make_project(client, human_headers, "WSUpd")
     wsid = _make_ws(client, human_headers, pid)
     r = client.put(f"/api/workstreams/{wsid}",
-                   json={"title_en": "Updated WS", "status": "in-progress"},
+                   json={"title_en": "Updated WS"},
                    headers=human_headers)
     assert r.status_code == 200
+
+
+def test_workstream_status_cannot_be_set_manually(client, human_headers):
+    pid = _make_project(client, human_headers, "WSAutoStatus")
+    wsid = _make_ws(client, human_headers, pid)
+    r = client.put(f"/api/workstreams/{wsid}",
+                   json={"status": "done"}, headers=human_headers)
+    assert r.status_code == 400
+    assert "derived automatically" in r.json()["detail"]
 
 
 def test_workstream_update_no_fields(client, human_headers):

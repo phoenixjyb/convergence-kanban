@@ -2,7 +2,7 @@
 
 from fastapi import APIRouter
 
-from db import get_db
+from db import derive_workstream_state, get_db
 
 router = APIRouter(prefix="/api", tags=["dashboard"])
 
@@ -56,6 +56,7 @@ def dashboard():
                 wid = ws["id"]
                 tasks = tasks_by_ws.get(wid, [])
                 blockers = blockers_by_ws.get(wid, [])
+                task_state = derive_workstream_state(t["status"] for t in tasks)
                 top_tasks = [t for t in tasks if not t["parent_task_id"]]
                 task_list = []
                 for t in top_tasks:
@@ -69,21 +70,14 @@ def dashboard():
                     task_list.append(td)
                 ws_list.append({
                     **dict(ws),
+                    "status": task_state["status"],
+                    "status_source": task_state["status_source"],
                     "tasks": task_list,
                     "blockers": [dict(b) for b in blockers],
-                    "task_stats": {
-                        "total": len(top_tasks),
-                        "done": sum(1 for t in top_tasks if t["status"] in ("done", "abandoned")),
-                        "in_review": sum(1 for t in top_tasks if t["status"] == "in_review"),
-                        "doing": sum(1 for t in top_tasks if t["status"] == "doing"),
-                        "blocked": sum(1 for t in top_tasks if t["status"] == "blocked"),
-                        "abandoned": sum(1 for t in top_tasks if t["status"] == "abandoned"),
-                    }
+                    "task_stats": task_state,
                 })
-            # Aggregate task stats across all workstreams
-            all_proj_tasks = [t for ws in ws_list for t in ws["tasks"]]
-            total_tasks = len(all_proj_tasks)
-            done_tasks = sum(1 for t in all_proj_tasks if t["status"] in ("done", "abandoned"))
+            total_tasks = sum(ws["task_stats"]["total"] for ws in ws_list)
+            done_tasks = sum(ws["task_stats"]["done"] for ws in ws_list)
             result.append({
                 **dict(p),
                 "workstreams": ws_list,

@@ -3,10 +3,16 @@
 This is the short reference for AI agents (Claude Code, Codex, Cursor, Aider,
 GitHub Copilot, etc.) that want to interact with an ConvergenceKanban deployment.
 
+本文件是给编码 Agent 使用的简版 API 工作流说明。命令示例保持英文和 shell
+格式不变，中文说明用于帮助团队成员快速审阅规则意图。
+
 > **Pull this file live** — it's served by the kanban itself:
 > `curl <KANBAN_HOST>/api/agent-guide?format=quickstart`
 > Drop that one-liner in your project's `CLAUDE.md` / `AGENTS.md` and your
 > agent has the latest version every session.
+>
+> **建议实时拉取**：把上面的一行命令放进项目的 `CLAUDE.md` / `AGENTS.md`，
+> Agent 每次会话都能拿到当前部署的最新规则。
 
 `<KANBAN_HOST>` below means the URL where ConvergenceKanban is reachable from your
 machine — typically `http://localhost:8666` for a local install, or a private
@@ -20,6 +26,8 @@ Human team workflow guide:
 Unknown user names are rejected with HTTP 401. Ask an admin to create your
 bot user once before your first run:
 
+未知用户名会被 401 拒绝。首次使用前，请管理员先创建 bot 用户。
+
 ```bash
 # Run by a human admin, not by you
 curl -X POST <KANBAN_HOST>/api/users \
@@ -31,6 +39,8 @@ curl -X POST <KANBAN_HOST>/api/users \
 Use the `{firstname}-{tool}` naming pattern (e.g. `alice-claude`, `bob-codex`,
 `carol-cursor`). This makes activity logs readable at a glance.
 
+命名统一使用 `{firstname}-{tool}`，这样活动日志可以直接看出是谁用哪个工具操作。
+
 ## Setup
 
 ```bash
@@ -39,6 +49,12 @@ export KANBAN_USER="yourname-yourtool"
 ```
 
 ## Workflow
+
+Cross-team concerns belong in `/api/issues`, separately from software bugs.
+See [Issues workflow](ISSUES_WORKFLOW.md), also served through
+`/api/agent-guide?format=issues`. Agents can submit/update and use
+`pending_review`; only humans close/archive/restore. 跨团队重点问题使用 issues
+接口，Agent 完成后提交 `pending_review`，人类确认关闭。
 
 ### 1. Read the board
 
@@ -86,6 +102,13 @@ curl -s -X PUT $KANBAN/tasks/TASK_ID \
 
 ### 4. Report a blocker
 
+Workstream status and progress update automatically from all tasks and
+subtasks. Agents must update task status only; the workstream status API is
+read-only derived state.
+
+Workstream 状态和进度会根据全部任务及子任务自动更新。Agent 只更新任务状态，
+不要尝试手工修改 workstream 状态。
+
 ```bash
 curl -s -X POST $KANBAN/blockers \
   -H 'Content-Type: application/json' \
@@ -101,6 +124,9 @@ curl -s -X POST $KANBAN/blockers \
 
 **IMPORTANT**: Always include `"source": "agent"` — this routes your bug to
 the agent bug table (separate from the QA team's manual bugs).
+
+**重要**：Agent 新建缺陷时必须带 `"source": "agent"`，这样会进入 RD/Agent
+缺陷表，不会混入 QA 手工缺陷表。
 
 ```bash
 curl -s -X POST $KANBAN/bugs \
@@ -124,6 +150,9 @@ Response: `{"id": "abc123", "display_id": "RD-260509-001"}`
 ### 6. Move a bug to `fix_complete` / `to_verify` / `resolved` with fix details
 
 When the fix is in, populate fix metadata in the same call.
+
+修复落地后，状态和修复元数据要在同一次请求里更新。MR 级修复默认使用
+`fix_complete`；`to_verify` 留给进入正式验证构建后的 QA/发布流程。
 
 ```bash
 curl -s -X PUT $KANBAN/bugs/BUG_ID \
@@ -173,6 +202,15 @@ If the deployment has the Feishu wiki integration configured (see
 `docs/SETUP.md`), agents can create QA work-order tickets in a Feishu wiki
 sub-page from the API:
 
+Do not use personal Feishu bot tokens. Use the kanban API with your
+`X-Kanban-User`; the kanban backend owns the configured Feishu app/bot and
+creates the wiki page centrally. The returned `wiki_url` still depends on
+the Feishu wiki space or parent-page permissions.
+
+不要使用个人飞书机器人 token。Agent 只调用 Kanban API，并带上自己的
+`X-Kanban-User`；Kanban 后端统一使用部署配置里的飞书应用/机器人创建 wiki
+页面。`wiki_url` 能否打开，取决于飞书 wiki 空间或父页面权限。
+
 ```bash
 curl -s -X POST $KANBAN/qa-tickets \
   -H 'Content-Type: application/json' \
@@ -197,7 +235,9 @@ curl -s -X POST $KANBAN/qa-tickets \
 ```
 
 `task_type` ∈ `{采集任务, 测试任务, 其它任务}`. `owner` defaults to
-`X-Kanban-User`. Tickets land under a configurable Feishu wiki sub-page.
+`X-Kanban-User`. `version` should identify the MR, commit, branch, build,
+APK, or tarball QA should verify. Tickets land under a configurable Feishu
+wiki sub-page.
 
 ```bash
 # List your tickets
@@ -209,7 +249,15 @@ curl -s -X DELETE -H "X-Kanban-User: $KANBAN_USER" \
 ```
 
 If the QA ticket feature isn't configured on this deployment, these
-endpoints return 503 with a hint.
+endpoints return 503 with a hint. HTTP 401 means the agent user has not
+been registered yet. If ticket creation succeeds but people cannot open the
+wiki URL, fix Feishu wiki parent/space sharing rather than changing agent
+credentials. For private-network kanban hosts, add `--noproxy '*'` if your
+shell proxy catches local addresses.
+
+常见问题：401 表示用户未注册；503 表示该部署未配置飞书 wiki ticket 功能；
+ticket 创建成功但打不开页面，通常是飞书父页面或空间分享权限问题，不是 Agent
+凭据问题。
 
 ## Task statuses
 
@@ -236,6 +284,13 @@ endpoints return 503 with a hint.
 `open → investigating → fixing → fix_complete → to_verify → resolved → closed`
 (also `wontfix`).
 
+`hold` (Feishu `Hold`, displayed as **On Hold**) is an off-flow pause and
+still counts as unresolved. It does not mean fixed, resolved, or closed; when
+work resumes, move it to the appropriate active status. Hold alone does not
+require fix metadata. On `RD-` / agent bugs, Reporter and Assignee are
+plain-text identity values, not Feishu Person fields; QA Person fields remain
+person fields.
+
 - **`fix_complete`** — fix merged; spot-check via linked QA ticket. Use
   this for daily MR fixes.
 - **`to_verify`** — fix bundled into a weekly/monthly release; reserved
@@ -244,6 +299,13 @@ endpoints return 503 with a hint.
 Agents should stop at `fix_complete` for normal MR-level work. A human
 release owner or QA promotes the bug to `to_verify` once the fix is in a
 verification build.
+
+普通 MR 级修复由 Agent 停在 `fix_complete`。进入周版/月版等验证构建后，再由
+发布负责人或 QA 推进到 `to_verify`。
+`hold`（飞书 `Hold`，界面显示“暂缓”）是主流程之外的暂停状态，仍计为未解决，
+不表示已修复、已解决或已关闭；工作恢复后改回合适的处理中状态。仅暂缓无需填写
+修复元数据。`RD-` / Agent 缺陷的 Reporter 和 Assignee 是普通文本身份值，不是飞书
+Person 字段；QA 的 Person 字段仍是人员字段。
 
 ## Bug display IDs
 
@@ -276,3 +338,12 @@ curl -s $KANBAN/projects | python3 -c "import json,sys; [print(f\"{p['id']}  {p[
 - **Link fixed bugs to tasks** before changing bug status — helps QA recover
   the implementation context
 - Both `title_en` and `title_zh` are welcome (bilingual board)
+
+中文摘要：
+
+- 先注册 Agent 用户；未注册会返回 401。
+- 每次写操作都带 `X-Kanban-User`。
+- 新建缺陷时显式设置 `"source": "agent"`。
+- 先读 dashboard，优先接已有任务，不要制造重复任务。
+- Agent 完成任务后进入 `in_review`，由人类确认到 `done`。
+- 修复缺陷时必须关联任务，并填写 `fix_method`、`fix_version`、`fix_date`。

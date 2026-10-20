@@ -189,6 +189,7 @@ def link_bug_tasks(bug_id: str, body: BugLinkTasks, request: Request):
         if not bug:
             raise HTTPException(404, "Bug not found")
         linked = 0
+        valid_ids = []
         for tid in body.task_ids:
             task = conn.execute("SELECT id FROM tasks WHERE id=? AND deleted_at IS NULL", (tid,)).fetchone()
             if not task:
@@ -196,10 +197,13 @@ def link_bug_tasks(bug_id: str, body: BugLinkTasks, request: Request):
             conn.execute("INSERT OR IGNORE INTO bug_task_links (bug_id, task_id) VALUES (?, ?)",
                          (bug_id, tid))
             linked += 1
+            valid_ids.append(tid)
         # Update legacy task_id to first linked task if not set
         if linked and not conn.execute("SELECT task_id FROM bugs WHERE id=? AND task_id IS NOT NULL AND task_id != ''",
                                        (bug_id,)).fetchone():
-            conn.execute("UPDATE bugs SET task_id=? WHERE id=?", (body.task_ids[0], bug_id))
+            conn.execute("UPDATE bugs SET task_id=? WHERE id=?", (valid_ids[0], bug_id))
+        if linked:
+            conn.execute("UPDATE bugs SET updated_at=? WHERE id=?", (now_iso(), bug_id))
         log_activity(conn, "bug", bug_id, "linked_tasks", actor=actor,
                      detail=f"linked {linked} task(s)")
         return {"linked": linked}
@@ -216,6 +220,7 @@ def unlink_bug_task(bug_id: str, task_id: str, request: Request):
             raise HTTPException(404, "Link not found")
         # Clear legacy task_id if it matches
         conn.execute("UPDATE bugs SET task_id=NULL WHERE id=? AND task_id=?", (bug_id, task_id))
+        conn.execute("UPDATE bugs SET updated_at=? WHERE id=?", (now_iso(), bug_id))
         log_activity(conn, "bug", bug_id, "unlinked_task", actor=actor, detail=task_id)
         return {"ok": True}
 

@@ -55,5 +55,66 @@ def test_sync_status_summarizes_state_file_safely(client):
     assert data["tables"]["qa_bugs"]["latest_sync_at"] == "2026-07-07 10:06:00"
     assert data["tables"]["rd_bugs"]["latest_sync_at"] == "2026-07-07 10:07:00"
     assert data["unresolved_conflicts"] >= 1
+    assert "bug_hygiene" in data
+    assert "local_active_count" in data["tables"]["qa_bugs"]
+    assert "state_map_delta" in data["tables"]["qa_bugs"]
     assert "appTokenSecretValue" not in body
     assert "tblQABugsSecret" not in body
+
+
+def test_sync_status_reports_pending_issue_details_without_raw_state(client):
+    _remove_state_files()
+    state_path = DATA_DIR / 'feishu_sync_state_team.json'
+    state_path.write_text(json.dumps({
+        'issues_table': 'tbl-secret',
+        'issues_last_cycle': {'needs_details': 1, 'blank_ignored': 2,
+                              'pending_details': [{'title': 'Outdoor controls',
+                                                   'missing_fields': ['Issue Content', 'private_field'],
+                                                   'secret': 'not-public'}]},
+    }))
+    result = client.get('/api/sync/status').json()['tables']['issues']
+    assert result['needs_details'] == 1
+    assert result['blank_ignored'] == 2
+    assert result['errors'] == 0
+    assert result['pending_details'] == [{'title': 'Outdoor controls', 'missing_fields': ['Issue Content']}]
+    assert 'not-public' not in json.dumps(result)
+    assert 'tbl-secret' not in json.dumps(result)
+
+
+def test_sync_status_reports_bug_hygiene(client):
+    _remove_state_files()
+    state_path = DATA_DIR / "feishu_sync_state_team.json"
+    state_path.write_text(json.dumps({
+        "projects_table": "tblProjectsSecret",
+        "tasks_table": "tblTasksSecret",
+        "bugs_table": "tblQABugsSecret",
+        "rd_bugs_table": "tblRDBugsSecret",
+        "last_sync_ts_bugs": {
+            "sync-status-missing-id": "2026-07-07 10:06:00",
+        },
+        "last_sync_ts_bugs_rd": {
+            "sync-status-legacy-id": "2026-07-07 10:07:00",
+        },
+    }), encoding="utf-8")
+
+    with get_db() as conn:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO bugs
+            (id, title, source, display_id, status, fix_method, fix_version, fix_date)
+            VALUES
+            ('sync-status-missing-id', 'Missing display id', 'manual', '', 'fix_complete', '', '', ''),
+            ('sync-status-legacy-id', 'Legacy display id', 'agent', 'RD-0707-001', 'closed', '', '', '')
+            """
+        )
+
+    r = client.get("/api/sync/status")
+    assert r.status_code == 200
+    data = r.json()
+    hygiene = data["bug_hygiene"]
+    assert hygiene["qa_bugs"]["missing_display_id"] >= 1
+    assert hygiene["qa_bugs"]["fixed_missing_metadata"] >= 1
+    assert hygiene["rd_bugs"]["legacy_display_id"] >= 1
+    assert hygiene["rd_bugs"]["fixed_missing_metadata"] >= 1
+    assert data["tables"]["qa_bugs"]["local_active_count"] >= 1
+    assert "tblQABugsSecret" not in json.dumps(data)

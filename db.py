@@ -1,6 +1,7 @@
 """Database initialization, migrations, and connection management."""
 
 import os
+import re
 import sqlite3
 from contextlib import contextmanager
 from pathlib import Path
@@ -13,6 +14,108 @@ DATA_DIR.mkdir(parents=True, exist_ok=True)
 UPLOAD_DIR = DATA_DIR / "uploads"
 UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024  # 20MB
+
+TASK_STATUSES = ("todo", "doing", "in_review", "done", "blocked", "abandoned")
+
+
+def _migrate_bug_statuses(conn):
+    """Rebuild the status constraint without discarding columns or child links."""
+    schema = conn.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='bugs'").fetchone()[0]
+    constraint = re.search(r"CHECK\s*\(\s*status\s+IN\s*\([^)]*\)\s*\)", schema, re.I)
+    if not constraint:
+        raise RuntimeError("Cannot locate bugs status constraint")
+    if "'hold'" in constraint.group():
+        return
+    statuses = "'open','hold','investigating','fixing','fix_complete','to_verify','resolved','closed','wontfix'"
+    schema = schema[:constraint.start()] + f"CHECK(status IN ({statuses}))" + schema[constraint.end():]
+    schema, replaced = re.subn(r'^(CREATE TABLE(?: IF NOT EXISTS)?\s+)(?:"bugs"|bugs)(?=\s*\()',
+                              r'\1"bugs_hold_migration"', schema, count=1, flags=re.I)
+    if replaced != 1:
+        raise RuntimeError("Cannot rebuild bugs table safely")
+    objects = [row[0] for row in conn.execute(
+        "SELECT sql FROM sqlite_master WHERE tbl_name='bugs' AND type IN ('index','trigger') AND sql IS NOT NULL"
+    )]
+    columns = ','.join('"' + row[1].replace('"', '""') + '"' for row in conn.execute("PRAGMA table_info(bugs)"))
+    conn.commit()  # foreign_keys cannot be changed inside a transaction.
+    foreign_keys = conn.execute("PRAGMA foreign_keys").fetchone()[0]
+    before = {tuple(row) for row in conn.execute("PRAGMA foreign_key_check")}
+    conn.execute("PRAGMA foreign_keys=OFF")
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        conn.execute(schema)
+        conn.execute(f"INSERT INTO bugs_hold_migration ({columns}) SELECT {columns} FROM bugs")
+        conn.execute("DROP TABLE bugs")
+        conn.execute("ALTER TABLE bugs_hold_migration RENAME TO bugs")
+        for sql in objects:
+            conn.execute(sql)
+        after = {tuple(row) for row in conn.execute("PRAGMA foreign_key_check")}
+        if after - before:
+            raise RuntimeError("Bug status migration introduced foreign key violations")
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.execute(f"PRAGMA foreign_keys={foreign_keys}")
+
+
+def derive_workstream_state(statuses) -> dict:
+    """Derive workstream status and progress from its active task statuses."""
+    counts = {status: 0 for status in TASK_STATUSES}
+    for status in statuses:
+        counts[status if status in counts else "todo"] += 1
+
+    total = sum(counts.values())
+    completed = counts["done"] + counts["abandoned"]
+    unfinished = total - completed
+
+    if total == 0:
+        status = "planned"
+    elif unfinished == 0:
+        status = "done"
+    elif counts["blocked"]:
+        status = "blocked"
+    elif counts["in_review"] == unfinished:
+        status = "review"
+    elif counts["doing"] or counts["in_review"] or completed:
+        status = "in-progress"
+    else:
+        status = "planned"
+
+    return {
+        "status": status,
+        "status_source": "tasks",
+        "total": total,
+        "done": completed,
+        "todo": counts["todo"],
+        "doing": counts["doing"],
+        "in_review": counts["in_review"],
+        "blocked": counts["blocked"],
+        "abandoned": counts["abandoned"],
+        "pct": int(completed / total * 100) if total else 0,
+    }
+
+
+def _derived_workstream_update_sql(workstream_ref: str) -> str:
+    """Build the trigger statement that persists task-derived workstream state."""
+    active = (
+        "SELECT status FROM tasks "
+        f"WHERE workstream_id={workstream_ref} AND deleted_at IS NULL"
+    )
+    return f"""
+        UPDATE workstreams
+        SET status = CASE
+                WHEN NOT EXISTS ({active}) THEN 'planned'
+                WHEN NOT EXISTS ({active} AND status NOT IN ('done','abandoned')) THEN 'done'
+                WHEN EXISTS ({active} AND status='blocked') THEN 'blocked'
+                WHEN (SELECT count(*) FROM ({active}) WHERE status NOT IN ('done','abandoned')) =
+                     (SELECT count(*) FROM ({active}) WHERE status='in_review') THEN 'review'
+                WHEN EXISTS ({active} AND status IN ('doing','in_review','done','abandoned')) THEN 'in-progress'
+                ELSE 'planned'
+            END,
+            updated_at = strftime('%Y-%m-%d %H:%M:%S', 'now', '+8 hours')
+        WHERE id={workstream_ref} AND deleted_at IS NULL;
+    """
 
 
 @contextmanager
@@ -108,7 +211,7 @@ def init_db():
             title           TEXT NOT NULL,
             description     TEXT NOT NULL DEFAULT '',
             severity        TEXT NOT NULL DEFAULT 'medium' CHECK(severity IN ('critical','high','medium','low')),
-            status          TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','investigating','fixing','fix_complete','to_verify','resolved','closed','wontfix')),
+            status          TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','hold','investigating','fixing','fix_complete','to_verify','resolved','closed','wontfix')),
             reporter        TEXT NOT NULL DEFAULT '',
             assignee        TEXT NOT NULL DEFAULT '',
             workstream_id   TEXT REFERENCES workstreams(id),
@@ -282,6 +385,45 @@ def init_db():
         )""")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_conflict_entity ON sync_conflicts(entity_type, entity_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_conflict_unresolved ON sync_conflicts(resolved)")
+
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS issues (
+                id TEXT PRIMARY KEY,
+                display_id TEXT NOT NULL UNIQUE,
+                title TEXT NOT NULL,
+                introduction TEXT NOT NULL DEFAULT '',
+                content TEXT NOT NULL,
+                raised_by TEXT NOT NULL DEFAULT '',
+                raised_date TEXT NOT NULL,
+                category TEXT NOT NULL DEFAULT 'other' CHECK(category IN ('hardware','software','product_experience','process','delivery','operations','other')),
+                priority TEXT NOT NULL DEFAULT 'medium' CHECK(priority IN ('critical','high','medium','low')),
+                rank INTEGER NOT NULL DEFAULT 0 CHECK(rank >= 0),
+                owner TEXT NOT NULL DEFAULT '',
+                due_date TEXT,
+                status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','triaged','in_progress','blocked','pending_review','closed')),
+                resolution_criteria TEXT NOT NULL DEFAULT '',
+                resolution TEXT NOT NULL DEFAULT '',
+                project_id TEXT REFERENCES projects(id),
+                workstream_id TEXT REFERENCES workstreams(id),
+                task_ids TEXT NOT NULL DEFAULT '[]',
+                bug_ids TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                deleted_at TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_issues_status ON issues(status, deleted_at);
+        """)
+
+        # Extend the existing conflict register without losing old resolutions.
+        conflict_sql = conn.execute("SELECT sql FROM sqlite_master WHERE name='sync_conflicts'").fetchone()["sql"]
+        if "'issue'" not in conflict_sql:
+            conn.execute("ALTER TABLE sync_conflicts RENAME TO sync_conflicts_old")
+            conn.execute(conflict_sql.replace("('task','blocker','bug')", "('task','blocker','bug','issue')"))
+            conn.execute("INSERT INTO sync_conflicts SELECT * FROM sync_conflicts_old")
+            conn.execute("DROP TABLE sync_conflicts_old")
+            conn.execute("CREATE INDEX idx_conflict_entity ON sync_conflicts(entity_type, entity_id)")
+            conn.execute("CREATE INDEX idx_conflict_unresolved ON sync_conflicts(resolved)")
+
         # Migration: keep tasks status CHECK constraint in sync with latest valid set.
         # SQLite can't ALTER CHECK constraints, so probe-and-recreate.
         # Probe with the most recently added status — this catches DBs missing any of: in_review, abandoned.
@@ -378,6 +520,16 @@ def init_db():
         )""")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_btl_bug ON bug_task_links(bug_id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_btl_task ON bug_task_links(task_id)")
+        conn.execute("""CREATE TABLE IF NOT EXISTS feishu_bug_imports (
+            profile TEXT NOT NULL,
+            table_id TEXT NOT NULL,
+            record_id TEXT NOT NULL,
+            bug_id TEXT NOT NULL REFERENCES bugs(id) ON DELETE CASCADE,
+            imported_at TEXT NOT NULL,
+            linked INTEGER NOT NULL DEFAULT 0 CHECK(linked IN (0,1)),
+            PRIMARY KEY (profile, table_id, record_id),
+            UNIQUE (profile, table_id, bug_id)
+        )""")
         # Migrate existing bugs.task_id into bug_task_links
         conn.execute("""INSERT OR IGNORE INTO bug_task_links (bug_id, task_id)
             SELECT id, task_id FROM bugs
@@ -404,55 +556,46 @@ def init_db():
             PRIMARY KEY (user_id, channel)
         )""")
 
-        # ── v1.5/1.4.8: keep bugs status CHECK in sync (added: to_verify, fix_complete) ──
-        # Probe with the most recently added status. If the constraint hasn't
-        # been rebuilt to include it, do the rebuild now.
-        _needs_bug_migration = False
-        try:
-            conn.execute("PRAGMA foreign_keys=OFF")
-            conn.execute("INSERT INTO bugs (id, title, status) VALUES ('__chk_fc__', '__chk__', 'fix_complete')")
-            conn.execute("DELETE FROM bugs WHERE id='__chk_fc__'")
-            conn.execute("PRAGMA foreign_keys=ON")
-        except (sqlite3.IntegrityError, sqlite3.OperationalError):
-            _needs_bug_migration = True
-            conn.execute("PRAGMA foreign_keys=ON")
-        if _needs_bug_migration:
-            conn.execute("DROP TABLE IF EXISTS bugs_new")
-            conn.execute("PRAGMA foreign_keys=OFF")
-            conn.execute("""CREATE TABLE bugs_new (
-                id TEXT PRIMARY KEY, title TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
-                severity TEXT NOT NULL DEFAULT 'medium' CHECK(severity IN ('critical','high','medium','low')),
-                status TEXT NOT NULL DEFAULT 'open' CHECK(status IN ('open','investigating','fixing','fix_complete','to_verify','resolved','closed','wontfix')),
-                reporter TEXT NOT NULL DEFAULT '', assignee TEXT NOT NULL DEFAULT '',
-                workstream_id TEXT REFERENCES workstreams(id), task_id TEXT REFERENCES tasks(id),
-                project_id TEXT REFERENCES projects(id), environment TEXT NOT NULL DEFAULT '',
-                steps_to_reproduce TEXT NOT NULL DEFAULT '',
-                issue_version TEXT NOT NULL DEFAULT '', device_id TEXT NOT NULL DEFAULT '',
-                issue_images TEXT NOT NULL DEFAULT '',
-                source TEXT NOT NULL DEFAULT 'manual' CHECK(source IN ('manual','agent')),
-                display_id TEXT NOT NULL DEFAULT '',
-                fix_method TEXT NOT NULL DEFAULT '',
-                fix_version TEXT NOT NULL DEFAULT '',
-                fix_date TEXT NOT NULL DEFAULT '',
-                created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-                resolved_at TEXT, deleted_at TEXT)""")
-            conn.execute("""INSERT INTO bugs_new (id, title, description, severity, status, reporter,
-                assignee, workstream_id, task_id, project_id, environment, steps_to_reproduce,
-                issue_version, device_id, issue_images, source, display_id,
-                fix_method, fix_version, fix_date,
-                created_at, updated_at, resolved_at, deleted_at)
-                SELECT id, title, description, severity, status, reporter,
-                assignee, workstream_id, task_id, project_id, environment, steps_to_reproduce,
-                COALESCE(issue_version,''), COALESCE(device_id,''), COALESCE(issue_images,''),
-                COALESCE(source,'manual'), COALESCE(display_id,''),
-                COALESCE(fix_method,''), COALESCE(fix_version,''), COALESCE(fix_date,''),
-                created_at, updated_at, resolved_at, deleted_at FROM bugs""")
-            conn.execute("DROP TABLE bugs")
-            conn.execute("ALTER TABLE bugs_new RENAME TO bugs")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_bugs_project ON bugs(project_id)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_bugs_ws ON bugs(workstream_id)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_bugs_task ON bugs(task_id)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_bugs_status ON bugs(status)")
-            conn.execute("PRAGMA foreign_keys=ON")
-            conn.commit()
+        _migrate_bug_statuses(conn)
+
+        # Workstream status is derived from active tasks. Install these after
+        # table-rebuild migrations so every task mutation path stays covered.
+        for trigger in (
+            "tasks_derive_workstream_after_insert",
+            "tasks_derive_workstream_after_update",
+            "tasks_derive_old_workstream_after_move",
+            "tasks_derive_workstream_after_delete",
+        ):
+            conn.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+        conn.executescript(f"""
+            CREATE TRIGGER tasks_derive_workstream_after_insert
+            AFTER INSERT ON tasks
+            BEGIN
+                {_derived_workstream_update_sql('NEW.workstream_id')}
+            END;
+
+            CREATE TRIGGER tasks_derive_workstream_after_update
+            AFTER UPDATE OF status, workstream_id, deleted_at ON tasks
+            BEGIN
+                {_derived_workstream_update_sql('NEW.workstream_id')}
+            END;
+
+            CREATE TRIGGER tasks_derive_old_workstream_after_move
+            AFTER UPDATE OF workstream_id ON tasks
+            WHEN OLD.workstream_id != NEW.workstream_id
+            BEGIN
+                {_derived_workstream_update_sql('OLD.workstream_id')}
+            END;
+
+            CREATE TRIGGER tasks_derive_workstream_after_delete
+            AFTER DELETE ON tasks
+            BEGIN
+                {_derived_workstream_update_sql('OLD.workstream_id')}
+            END;
+        """)
+
+        # Backfill workstreams created before derived status was introduced.
+        for row in conn.execute(
+            "SELECT id FROM workstreams WHERE deleted_at IS NULL"
+        ).fetchall():
+            conn.executescript(_derived_workstream_update_sql(repr(row["id"])))
