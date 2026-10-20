@@ -162,7 +162,9 @@ def _conflict(db, iid, field, local, remote):
 def sync_issues(db, transport):
     """Advance baselines only after acknowledged writes. Archive is explicit."""
     table = transport._state.get("issues_table")
-    stats = {"pushed": 0, "pulled": 0, "conflicts": 0, "errors": 0}
+    stats = {"pushed": 0, "pulled": 0, "conflicts": 0, "errors": 0,
+             "needs_details": 0, "blank_ignored": 0}
+    pending = []
     if not table:
         return stats
     records, complete = transport.list_records(table)
@@ -190,6 +192,22 @@ def sync_issues(db, transport):
             stats["errors"] += 1
             continue
         seen.add(iid)
+        # Unlinked drafts stay in Feishu until the author supplies both fields.
+        # Linked records still take the normal validation path: never hide damage
+        # to an already-synced issue as an incomplete new submission.
+        if not iid:
+            title = _text(fields.get("Title")).strip()
+            content = _text(fields.get("Issue Content")).strip()
+            introduction = _text(fields.get("Introduction")).strip()
+            if not (title or content or introduction):
+                stats["blank_ignored"] += 1
+                continue
+            missing = [label for label, value in (("Title", title), ("Issue Content", content)) if not value]
+            if missing:
+                stats["needs_details"] += 1
+                if len(pending) < 10:
+                    pending.append({"title": title[:200], "missing_fields": missing})
+                continue
         try:
             remote = from_fields(fields)
             validate_issue_values(db, remote, previous=local.get(iid))
@@ -270,6 +288,6 @@ def sync_issues(db, transport):
             stats["pushed"] += 1
         except RuntimeError:
             stats["errors"] += 1
-    transport._state["issues_last_cycle"] = {"at": now_iso(), **stats}
+    transport._state["issues_last_cycle"] = {"at": now_iso(), **stats, "pending_details": pending}
     transport.save_state()
     return stats

@@ -251,6 +251,15 @@ def sync_status():
         "staleness_seconds": _age_seconds(issue_cycle.get("at", "")),
         "errors": issue_cycle.get("errors", 0),
         "conflicts": issue_cycle.get("conflicts", 0),
+        "needs_details": issue_cycle.get("needs_details", 0),
+        "blank_ignored": issue_cycle.get("blank_ignored", 0),
+        "pending_details": [
+            {"title": str(item.get("title", ""))[:200],
+             "missing_fields": [field for field in item.get("missing_fields", [])
+                                if field in ("Title", "Issue Content")]}
+            for item in (issue_cycle.get("pending_details") or [])[:10]
+            if isinstance(item, dict) and isinstance(item.get("missing_fields"), list)
+        ] if isinstance(issue_cycle.get("pending_details", []), list) else [],
     }
     for key in ("qa_bugs", "rd_bugs"):
         tables[key]["local_active_count"] = bug_hygiene[key]["total"]

@@ -16,6 +16,40 @@ let currentUser = localStorage.getItem('kanban-user') || '';
 let activeIssue = null;
 let loadingError = '';
 let pendingUserAction = null;
+let issueSyncStatus = null;
+
+ISSUE_COPY.en.needsDetails = 'Feishu submissions awaiting details';
+ISSUE_COPY.zh.needsDetails = '飞书待补全的问题';
+ISSUE_COPY.en.missingFields = 'Missing';
+ISSUE_COPY.zh.missingFields = '缺少';
+ISSUE_COPY.en.untitled = 'Untitled';
+ISSUE_COPY.zh.untitled = '未填写标题';
+ISSUE_COPY.en.syncUnavailable = 'Feishu sync status unavailable.';
+ISSUE_COPY.zh.syncUnavailable = '暂时无法获取飞书同步状态。';
+ISSUE_COPY.en.syncErrors = 'Feishu sync errors';
+ISSUE_COPY.zh.syncErrors = '飞书同步错误';
+
+function issueSyncNotice(status) {
+  if (!status) return issueText('syncUnavailable');
+  const info = status.tables?.issues;
+  if (!info?.configured) return '';
+  const lines = [];
+  if (info.errors) lines.push(`${issueText('syncErrors')}: ${info.errors}`);
+  if (info.needs_details) {
+    lines.push(`${issueText('needsDetails')}: ${info.needs_details}`);
+    for (const row of info.pending_details || []) {
+      const fields = (row.missing_fields || []).map(field => field === 'Title' ? issueText('titleField') : issueText('content'));
+      lines.push(`${row.title || issueText('untitled')} — ${issueText('missingFields')}: ${fields.join(', ')}`);
+    }
+  }
+  return lines.join('\n');
+}
+function renderIssueSyncNotice() {
+  const node = document.getElementById('syncNotice');
+  node.textContent = issueSyncNotice(issueSyncStatus);
+  node.style.whiteSpace = 'pre-line';
+  node.hidden = !node.textContent;
+}
 
 function issueText(key) { return ISSUE_COPY[currentLang === 'zh' ? 'zh' : 'en'][key] || key; }
 function issueEsc(value) { return String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
@@ -81,6 +115,7 @@ function translateIssues() {
   document.getElementById('langBtn').textContent = currentLang === 'en' ? '中文' : 'EN';
   populateFilters();
   renderIssues();
+  renderIssueSyncNotice();
 }
 function toggleIssueLang() {
   currentLang = currentLang === 'en' ? 'zh' : 'en';
@@ -119,7 +154,11 @@ async function loadIssues() {
   loadingError = '';
   try {
     const query = document.getElementById('deletedToggle').checked ? '?include_deleted=true' : '';
-    const result = await issueApi(`/api/issues${query}`);
+    const [result, sync] = await Promise.all([
+      issueApi(`/api/issues${query}`),
+      issueApi('/api/sync/status').catch(() => null),
+    ]);
+    issueSyncStatus = sync;
     issues = Array.isArray(result) ? result : (Array.isArray(result?.items) ? result.items : []);
     setPageStatus('');
     if (referenceErrors.length) showPageError(`${issueText('apiUnavailable')} ${referenceErrors.join('; ')}`);
@@ -132,6 +171,7 @@ async function loadIssues() {
   }
   populateFilters();
   renderIssues();
+  renderIssueSyncNotice();
 }
 function showPageError(message) {
   const el = document.getElementById('pageError'); el.textContent = message; el.hidden = false;

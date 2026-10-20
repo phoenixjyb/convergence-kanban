@@ -12,8 +12,24 @@ const context = {
   currentLang: 'en'
 };
 vm.createContext(context);
-vm.runInContext(`${source}\nglobalThis.triage = {issueMatchesAttention, issueTimestamp, issueText, issueLabel};`, context);
+vm.runInContext(`${source}\nglobalThis.triage = {issueMatchesAttention, issueTimestamp, issueText, issueLabel, issueSyncNotice};`, context);
 const {issueMatchesAttention, issueTimestamp, issueText, issueLabel} = context.triage;
+
+test('sync notice distinguishes incomplete submissions from errors in both languages', () => {
+  const status = {tables: {issues: {configured: true, needs_details: 1, errors: 0, pending_details: [{title: '<Outdoor>', missing_fields: ['Issue Content']}]}}};
+  context.currentLang = 'en';
+  assert.match(context.triage.issueSyncNotice(status), /awaiting details: 1/);
+  assert.match(context.triage.issueSyncNotice(status), /<Outdoor>.*Missing: Content/);
+  context.currentLang = 'zh';
+  assert.match(context.triage.issueSyncNotice(status), /待补全的问题: 1/);
+  assert.match(context.triage.issueSyncNotice(status), /缺少: 内容/);
+  assert.equal(context.triage.issueSyncNotice({tables: {issues: {configured: true, errors: 0}}}), '');
+  assert.equal(context.triage.issueSyncNotice({tables: {issues: {configured: false}}}), '');
+  assert.match(context.triage.issueSyncNotice(null), /无法获取/);
+  assert.match(context.triage.issueSyncNotice({tables: {issues: {configured: true, errors: 2}}}), /同步错误: 2/);
+  assert.match(source, /node\.textContent = issueSyncNotice/);
+  context.currentLang = 'en';
+});
 
 test('attention labels are bilingual', () => {
   assert.equal(issueText('allAttention'), 'All attention');

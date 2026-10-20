@@ -2557,7 +2557,7 @@ function renderSyncStatus(status) {
         · ${t('syncUnresolved')}: <strong>${status.unresolved_conflicts || 0}</strong>
       </div>
       <div class="sync-status-grid">${tableRows}</div>
-      ${tables.issues?.configured ? `<div class="sync-status-meta">${t('syncIssues')}: ${t('syncIssueErrors')} <strong>${tables.issues.errors || 0}</strong> · ${t('syncUnresolved')}: <strong>${tables.issues.conflicts || 0}</strong></div>` : ''}
+      ${tables.issues?.configured ? `<div class="sync-status-meta">${t('syncIssues')}: ${t('syncIssueErrors')} <strong>${tables.issues.errors || 0}</strong> · ${t('syncNeedsDetails')}: <strong>${tables.issues.needs_details || 0}</strong> · ${t('syncUnresolved')}: <strong>${tables.issues.conflicts || 0}</strong></div>` : ''}
       <div class="sync-issue-grid">${issueRows}</div>
     </div>`;
 }

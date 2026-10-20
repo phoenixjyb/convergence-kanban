@@ -103,8 +103,20 @@ remain untouched and count as sync errors. Feishu editors are trusted to perform
 human actions such as closure; manage table editing permissions accordingly.
 Comments/activity are local to Kanban in this first version.
 
+New Feishu submissions need both **Title** and **Issue Content** before import.
+The Top Issues page shows incomplete submissions under **awaiting details**,
+with their titles and missing fields (up to 10 samples). Fill the missing fields
+in Feishu; the next sync imports the issue and assigns its ID automatically.
+Blank unlinked template rows are ignored. No content is invented and no draft is
+written back. Invalid changes to already-linked issues still count as errors.
+
 同步比较上次确认成功的字段值：不同字段的修改自动合并，同字段冲突进入现有
 冲突面板，写入失败不推进同步基线。首次接入时不一致的数据需要人工选择。
 飞书删除使用 Archived 复选框，不物理删除记录；丢失、重复或非法记录会报告
 错误，不盲目覆盖。飞书表编辑者被视为可信的人类操作员，应配置相应权限。
 当前版本评论和动态只保存在 Kanban。
+
+飞书新问题必须填写 **Title** 和 **Issue Content** 后才会导入。重点问题页面会显示
+“待补全”的数量、标题及缺失字段（最多 10 条示例）。在飞书补全后，下次同步会自动
+导入并分配编号。未关联的空白模板行直接忽略；系统不会编造内容或回写草稿。
+已关联问题的非法修改仍计为同步错误。

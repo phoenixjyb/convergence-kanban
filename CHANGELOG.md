@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Show incomplete new Feishu issues separately from sync errors, with bilingual
+  missing-field notices on the Top Issues page. Ignore blank unlinked rows and
+  import completed drafts automatically without changing the original draft.
 - Added validated task and blocker sync-conflict arbitration with bilingual title
   mapping, active-parent/date checks, task terminal-status governance, blocker
   resolution timestamps, and atomic bulk resolution. Bug conflict `task_ids`

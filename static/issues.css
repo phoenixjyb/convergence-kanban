@@ -114,3 +114,6 @@
   .issue-dialog, .user-dialog { max-height: 96vh; }
   .comment-form { align-items: stretch; flex-direction: column; }
 }
+.issues-app #syncNotice {
+  overflow-wrap: anywhere;
+}

@@ -111,10 +111,74 @@ def test_unconfigured_sync_is_noop(issue_factory):
     issue_factory()
     transport = FakeTransport(configured=False)
 
-    assert sync_issues(None, transport) == {"pushed": 0, "pulled": 0, "conflicts": 0, "errors": 0}
+    assert sync_issues(None, transport) == {"pushed": 0, "pulled": 0, "conflicts": 0, "errors": 0, "needs_details": 0, "blank_ignored": 0}
     assert transport.read_calls == 0
     assert transport.write_calls == []
     assert "issues_baselines" not in transport._state
+
+
+def test_blank_rows_are_ignored_without_writes():
+    transport = FakeTransport()
+    transport.records['blank'] = {'record_id': 'blank', 'fields': {'Title': '  ', 'Category': 'hardware'}}
+    with get_db() as conn:
+        stats = sync_issues(conn, transport)
+        assert conn.execute('SELECT count(*) FROM issues').fetchone()[0] == 0
+    assert stats['blank_ignored'] == 1
+    assert stats['errors'] == stats['needs_details'] == 0
+    assert not transport.write_calls
+
+
+@pytest.mark.parametrize('fields,missing', [
+    ({'Title': 'Outdoor controls'}, ['Issue Content']),
+    ({'Issue Content': 'Controls are unreadable'}, ['Title']),
+    ({'Introduction': 'Draft'}, ['Title', 'Issue Content']),
+])
+def test_incomplete_submissions_wait_then_import_when_completed(fields, missing):
+    transport = FakeTransport()
+    transport.records['draft'] = {'record_id': 'draft', 'fields': fields.copy()}
+    for _ in range(2):
+        with get_db() as conn:
+            stats = sync_issues(conn, transport)
+            assert conn.execute('SELECT count(*) FROM issues').fetchone()[0] == 0
+        assert stats['needs_details'] == 1
+        assert stats['errors'] == 0
+        assert transport._state['issues_last_cycle']['pending_details'][0]['missing_fields'] == missing
+        assert not transport.write_calls
+        assert transport._state['issues_baselines'] == {}
+    transport.records['draft']['fields'].update(Title='Outdoor controls', **{'Issue Content': 'Controls are unreadable'})
+    with get_db() as conn:
+        stats = sync_issues(conn, transport)
+        assert conn.execute('SELECT count(*) FROM issues').fetchone()[0] == 1
+    assert stats['pulled'] == 1
+    assert stats['needs_details'] == stats['errors'] == 0
+    assert transport._state['issues_last_cycle']['pending_details'] == []
+
+
+def test_linked_issue_missing_content_still_errors_and_preserves_baseline(issue_factory):
+    iid = issue_factory()
+    values = issue_snapshot(iid)
+    transport = FakeTransport()
+    transport.records['rec-1'] = remote_record(iid, values)
+    transport._state['issues_baselines'] = {iid: values.copy()}
+    transport.records['rec-1']['fields']['Issue Content'] = ''
+    with get_db() as conn:
+        stats = sync_issues(conn, transport)
+    assert stats['errors'] == 1
+    assert stats['needs_details'] == 0
+    assert issue_snapshot(iid) == values
+    assert transport._state['issues_baselines'][iid] == values
+    assert not transport.write_calls
+
+
+def test_pending_samples_are_bounded():
+    transport = FakeTransport()
+    transport.records = {str(i): {'record_id': str(i), 'fields': {'Title': 'x' * 250}} for i in range(15)}
+    with get_db() as conn:
+        stats = sync_issues(conn, transport)
+    assert stats['needs_details'] == 15
+    samples = transport._state['issues_last_cycle']['pending_details']
+    assert len(samples) == 10
+    assert all(len(row['title']) == 200 for row in samples)
 
 
 def test_local_issue_is_created_remotely_and_acknowledged(issue_factory):
@@ -328,7 +392,7 @@ def test_successful_sync_does_not_write_again(issue_factory):
     count = len(transport.write_calls)
     with get_db() as conn:
         stats = sync_issues(conn, transport)
-    assert stats == {"pushed": 0, "pulled": 0, "conflicts": 0, "errors": 0}
+    assert stats == {"pushed": 0, "pulled": 0, "conflicts": 0, "errors": 0, "needs_details": 0, "blank_ignored": 0}
     assert len(transport.write_calls) == count
 
 

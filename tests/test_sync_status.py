@@ -62,6 +62,25 @@ def test_sync_status_summarizes_state_file_safely(client):
     assert "tblQABugsSecret" not in body
 
 
+def test_sync_status_reports_pending_issue_details_without_raw_state(client):
+    _remove_state_files()
+    state_path = DATA_DIR / 'feishu_sync_state_team.json'
+    state_path.write_text(json.dumps({
+        'issues_table': 'tbl-secret',
+        'issues_last_cycle': {'needs_details': 1, 'blank_ignored': 2,
+                              'pending_details': [{'title': 'Outdoor controls',
+                                                   'missing_fields': ['Issue Content', 'private_field'],
+                                                   'secret': 'not-public'}]},
+    }))
+    result = client.get('/api/sync/status').json()['tables']['issues']
+    assert result['needs_details'] == 1
+    assert result['blank_ignored'] == 2
+    assert result['errors'] == 0
+    assert result['pending_details'] == [{'title': 'Outdoor controls', 'missing_fields': ['Issue Content']}]
+    assert 'not-public' not in json.dumps(result)
+    assert 'tbl-secret' not in json.dumps(result)
+
+
 def test_sync_status_reports_bug_hygiene(client):
     _remove_state_files()
     state_path = DATA_DIR / "feishu_sync_state_team.json"
